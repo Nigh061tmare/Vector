@@ -3917,6 +3917,15 @@ def hilo_camara(robot, fly_reflex, last, stop_evt):
         time.sleep(0.05)
 
 
+def _talk_note(last, signal) -> None:
+    """Registra una emision propia para no reaccionar a su eco."""
+    try:
+        import vector_talk as _vt
+        last.setdefault("talk_proto", _vt.ChirpProtocol()).note_emitted(signal)
+    except Exception:
+        pass
+
+
 def gestionar_talk(talk, fly_reflex, fc, last):
     """Protocolo de chirps estilo Flyctor: oye senales y emite las propias.
 
@@ -3942,7 +3951,22 @@ def gestionar_talk(talk, fly_reflex, fc, last):
                 "acercate":  (0.0, 190.0, 0.0),
                 "bloqueado": (0.0, 90.0, 0.95),
                 "ayuda":     (0.0, 140.0, 0.70),
+                "ven":       (0.0, 200.0, 0.0),
+                "aqui":      (0.0, 240.0, 0.0),
+                "te_veo":    (0.0, 260.0, 0.0),
+                "para":      (0.0, 120.0, 0.50),
             }
+            # Conversacion: acuse/respuesta, ignorando el eco de nuestra propia voz.
+            try:
+                import vector_talk as _vt
+                proto = last.setdefault("talk_proto", _vt.ChirpProtocol())
+                resp = proto.on_heard(oido)
+                if resp and ahora - float(last.get("talk_reply", 0.0)) >= 1.0:
+                    last["talk_reply"] = ahora
+                    proto.note_emitted(resp)
+                    talk.emitir(resp)
+            except Exception as _e_pr:
+                log.debug("Talk protocolo: %s", _e_pr)
             if fly_reflex is not None and fly_reflex.online and sig in mapa_sens:
                 b, d, t = mapa_sens[sig]
                 try:
@@ -3955,10 +3979,12 @@ def gestionar_talk(talk, fly_reflex, fc, last):
         escena = fc.get("scene") or {}
         if escena.get("novel"):
             last["talk_emit"] = ahora
+            _talk_note(last, "objeto")
             talk.emitir("objeto")
         elif fc.get("escape") and ahora - float(last.get("talk_escape", 0.0)) >= 8.0:
             last["talk_escape"] = ahora
             last["talk_emit"] = ahora
+            _talk_note(last, "bloqueado")
             talk.emitir("bloqueado")
 
 
@@ -5177,7 +5203,8 @@ def renovar_token_wirepod(robot_ip: Optional[str] = None) -> bool:
     """Invoca el guardián de red para obtener un nuevo token gRPC y sincronizar con Wire-Pod."""
     try:
         import vector_network_guard
-        return vector_network_guard.renovar_token_wirepod(ip_vector=robot_ip)
+        # HEALER serializa las renovaciones y aplica enfriamiento/backoff.
+        return vector_network_guard.HEALER.heal(robot_ip, motivo="watchdog")
     except Exception as err:
         log.warning("Watchdog Auto-Heal: error al invocar vector_network_guard: %s", err)
         return False
@@ -5196,7 +5223,12 @@ if __name__ == "__main__":
         except Exception as e:
             reintentos += 1
             err_str = str(e)
-            if "401" in err_str or "UNAUTHENTICATED" in err_str or "unauthorized" in err_str.lower():
+            try:
+                from vector_network_guard import es_error_401
+                _es401 = es_error_401(e)
+            except Exception:
+                _es401 = "401" in err_str or "UNAUTHENTICATED" in err_str
+            if _es401:
                 log.warning("Detectado error 401 gRPC / UNAUTHENTICATED. Renovando token automáticamente con Wire-Pod...")
                 print("\n[Watchdog Auto-Heal] 401 Unauthorized detectado. Renovando token automáticamente con Wire-Pod...")
                 renovar_token_wirepod()

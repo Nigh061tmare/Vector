@@ -5,11 +5,19 @@ Dos robots no intercambian mensajes por Wi-Fi: se hablan con chirps.
    camara -> VL -> cerebro-mosca -> ALTAVOZ
    microfono -> decodificador -> cerebro-mosca -> movimiento
 
-Vocabulario (4 senales):
-   objeto    = 1 chirp          -> "encontre un objeto"
-   acercate  = 2 chirps         -> "acercate"
-   bloqueado = 1 tono largo     -> "camino bloqueado"
-   ayuda     = chirps rapidos   -> "necesito ayuda"
+Vocabulario (9 senales; cada una = (n_chirps, frecuencia, duracion)):
+   objeto    = 1 chirp 1200 Hz  -> "encontre un objeto"
+   acercate  = 2 chirps 1200 Hz -> "acercate"
+   bloqueado = 1 tono largo 800 -> "camino bloqueado"
+   ayuda     = 4 chirps rapidos -> "necesito ayuda"
+   ack       = 1 chirp agudo    -> "recibido" (acuse)
+   aqui      = 3 chirps         -> "estoy aqui"
+   te_veo    = 2 chirps graves  -> "te veo"
+   ven       = 2 chirps agudos  -> "ven"
+   para      = 1 tono largo agudo -> "para / quieto"
+
+Protocolo (ChirpProtocol): una senal ajena se acusa con `ack`; `ven` se
+responde `aqui`; `ack` y el eco de la propia emision no generan respuesta.
 
 El altavoz de Vector solo acepta WAV de 8000-16025 Hz, 16 bits, mono.
 """
@@ -47,7 +55,28 @@ SIGNALS: Dict[str, Dict[str, Any]] = {
         "freq": 1600, "chirps": 4, "dur": 0.06, "gap": 0.06,
         "label": "Necesito ayuda", "emoji": "🆘",
     },
+    "ack": {
+        "freq": 2000, "chirps": 1, "dur": 0.08, "gap": 0.00,
+        "label": "Recibido", "emoji": "✅",
+    },
+    "aqui": {
+        "freq": 1400, "chirps": 3, "dur": 0.10, "gap": 0.10,
+        "label": "Estoy aqui", "emoji": "📍",
+    },
+    "te_veo": {
+        "freq": 800, "chirps": 2, "dur": 0.12, "gap": 0.12,
+        "label": "Te veo", "emoji": "👀",
+    },
+    "ven": {
+        "freq": 1800, "chirps": 2, "dur": 0.12, "gap": 0.12,
+        "label": "Ven", "emoji": "🫴",
+    },
+    "para": {
+        "freq": 1800, "chirps": 1, "dur": 0.50, "gap": 0.00, "long": True,
+        "label": "Para", "emoji": "✋",
+    },
 }
+SIGNALS["bloqueado"]["long"] = True
 
 #: Silencio al final de cada emision (ayuda al decodificador a cerrar el grupo)
 TAIL_SILENCE = 0.10
@@ -180,7 +209,7 @@ def classify(samples: np.ndarray) -> Dict[str, Any]:
 
         # tono largo vs corto
         long_tone = med_dur >= 0.30
-        if (name == "bloqueado") != long_tone:
+        if bool(spec.get("long", False)) != long_tone:
             continue
 
         # frecuencia: debe caer cerca de la del vocabulario. Sin esto, el
@@ -208,6 +237,72 @@ def classify(samples: np.ndarray) -> Dict[str, Any]:
         "confidence": round(max(0.0, best_score), 2),
     })
     return out
+
+
+# ---------------------------------------------------------------- protocolo
+#: Respuesta automatica a cada senal ajena. None = no responder (evita ping-pong:
+#: ven -> aqui -> ack -> fin).
+REPLY: Dict[str, Optional[str]] = {
+    "objeto": "ack", "acercate": "ack", "bloqueado": "ack", "ayuda": "ack",
+    "aqui": "ack", "te_veo": "ack", "para": "ack",
+    "ven": "aqui",
+    "ack": None,
+}
+ECHO_MARGIN_S = 0.45      # latencia altavoz->mic + cola de reverberacion
+MIN_CONFIDENCE = 0.35
+
+
+class ChirpProtocol:
+    """Logica de conversacion pura (sin audio ni hilos), con reloj inyectable.
+
+    - `note_emitted()` registra lo que Vector acaba de decir: durante su duracion
+      (+ margen) la misma senal oida se considera eco propio y se ignora.
+    - `on_heard()` devuelve la senal con la que responder, o None.
+    - Un ack oido resuelve la ultima emision pendiente de acuse.
+    """
+
+    def __init__(self, clock=None) -> None:
+        import time as _t
+        self._clock = clock or _t.monotonic
+        self._emitted: List[Tuple[str, float, float]] = []   # (signal, t0, t_end)
+        self.pending_ack: Optional[Tuple[str, float]] = None  # (signal, t0)
+        self.acked: List[str] = []
+
+    def note_emitted(self, signal: str) -> None:
+        if signal not in SIGNALS:
+            raise ValueError(f"senal desconocida: {signal!r}")
+        now = self._clock()
+        dur = synth(signal).size / SR
+        self._emitted = [e for e in self._emitted if now - e[2] < 5.0]
+        self._emitted.append((signal, now, now + dur + ECHO_MARGIN_S))
+        if signal != "ack":
+            self.pending_ack = (signal, now)
+
+    def is_own_echo(self, signal: str) -> bool:
+        now = self._clock()
+        return any(sig == signal and t0 <= now <= t_end
+                   for sig, t0, t_end in self._emitted)
+
+    def on_heard(self, result: Dict[str, Any]) -> Optional[str]:
+        sig = result.get("signal")
+        if not sig or float(result.get("confidence", 0.0)) < MIN_CONFIDENCE:
+            return None
+        if self.is_own_echo(sig):
+            return None
+        if sig == "ack":
+            if self.pending_ack is not None:
+                self.acked.append(self.pending_ack[0])
+                self.pending_ack = None
+            return None
+        return REPLY.get(sig)
+
+    def ack_timed_out(self, timeout_s: float = 4.0) -> Optional[str]:
+        """Senal emitida sin acuse pasado `timeout_s` (para reintentar). Se consume."""
+        if self.pending_ack and self._clock() - self.pending_ack[1] > timeout_s:
+            sig = self.pending_ack[0]
+            self.pending_ack = None
+            return sig
+        return None
 
 
 # ---------------------------------------------------------------- utilidades

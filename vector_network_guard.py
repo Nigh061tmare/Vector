@@ -12,9 +12,9 @@ import sys
 import time
 import socket
 import logging
+import threading
 from pathlib import Path
-from typing import Optional, Tuple
-import requests
+from typing import Any, Optional, Tuple
 
 import vector_log
 log = vector_log.get_logger("netguard")
@@ -33,6 +33,53 @@ WIREPOD_HOSTS = [
 SSH_REMOTE_USER = "vector"
 SSH_REMOTE_HOST = "100.100.148.91"
 REMOTE_BOT_SDK_INFO = r"C:\Users\pepde\AppData\Roaming\wire-pod\jdocs\botSdkInfo.json"
+# GUID global de Wire-Pod: es un secreto, mejor por entorno que en el codigo.
+WIREPOD_GLOBAL_GUID = os.getenv("WIREPOD_GLOBAL_GUID", "tni1TRsTRTaNSapjo0Y+Sw==")
+
+# Anti-tormenta: tras renovar (o fallar) no se vuelve a intentar antes de esto.
+RENEW_COOLDOWN_OK_S = 30.0
+RENEW_BACKOFF_MIN_S = 15.0
+RENEW_BACKOFF_MAX_S = 600.0
+
+
+def redactar(valor: Any, visibles: int = 4) -> str:
+    """Oculta secretos (GUID, tokens de sesion) para los logs."""
+    t = str(valor or "")
+    return t if len(t) <= visibles else t[:visibles] + "***"
+
+
+def es_error_401(exc: BaseException) -> bool:
+    """True si `exc` es un fallo de autenticacion gRPC (token/GUID invalido).
+
+    Mira el tipo (VectorUnauthenticatedException / grpc.StatusCode) y solo
+    despues el texto, y recorre la cadena __cause__/__context__ porque el SDK
+    envuelve el RpcError.
+    """
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ == "VectorUnauthenticatedException":
+            return True
+        code = getattr(cur, "code", None)
+        try:
+            c = code() if callable(code) else code
+        except Exception:
+            c = None
+        if c is not None and "UNAUTHENTICATED" in str(c).upper():
+            return True
+        txt = str(cur).lower()
+        if "401" in txt or "unauthenticated" in txt or "unauthorized" in txt:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def escribir_atomico(path: Path, contenido: str) -> None:
+    """Escribe y reemplaza: un cliente que lea a mitad no ve un ini truncado."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(contenido, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def resolver_ip_vector(timeout: float = 3.0) -> str:
@@ -101,8 +148,8 @@ def actualizar_sdk_config(ip: str, guid: Optional[str] = None) -> bool:
             f"name = {ROBOT_NAME}\n"
             f"guid = {current_guid}\n"
         )
-        CONFIG_PATH.write_text(content, encoding="utf-8")
-        log.info("sdk_config.ini actualizado con IP=%s, GUID=%s", ip, current_guid)
+        escribir_atomico(CONFIG_PATH, content)
+        log.info("sdk_config.ini actualizado con IP=%s, GUID=%s", ip, redactar(current_guid))
         return True
     except Exception as e:
         log.error("Error escribiendo sdk_config.ini: %s", e)
@@ -114,7 +161,7 @@ def sincronizar_remoto_wirepod(ip_vector: str, guid: str) -> None:
     try:
         import subprocess
         json_data = (
-            '{"global_guid":"tni1TRsTRTaNSapjo0Y+Sw==","robots":['
+            f'{{"global_guid":"{WIREPOD_GLOBAL_GUID}","robots":['
             f'{{"esn":"{ROBOT_SN}","ip_address":"{ip_vector}","guid":"{guid}","activated":true}}'
             ']}'
         )
@@ -146,6 +193,8 @@ def renovar_token_wirepod(ip_vector: Optional[str] = None) -> bool:
         log.error("Certificado de Vector no encontrado en %s", CERT_PATH)
         return False
 
+    import requests  # import perezoso: el modulo sigue importable sin requests
+
     session_token = None
     for wp_url in WIREPOD_HOSTS:
         try:
@@ -153,7 +202,7 @@ def renovar_token_wirepod(ip_vector: Optional[str] = None) -> bool:
             if resp.status_code == 200:
                 session_token = resp.json().get("session", {}).get("session_token")
                 if session_token:
-                    log.info("Sesión obtenida de Wire-Pod (%s): %s", wp_url, session_token)
+                    log.info("Sesión obtenida de Wire-Pod (%s): %s", wp_url, redactar(session_token))
                     break
         except Exception as e:
             log.debug("Wire-Pod en %s no respondió: %s", wp_url, e)
@@ -187,7 +236,7 @@ def renovar_token_wirepod(ip_vector: Optional[str] = None) -> bool:
         )
         res = stub.UserAuthentication(req, timeout=10)
         new_guid = res.client_token_guid.decode("utf-8")
-        log.info("¡Nuevo GUID Vector emitido con éxito!: %s", new_guid)
+        log.info("¡Nuevo GUID Vector emitido con éxito!: %s", redactar(new_guid))
 
         # Actualizar config local y remoto
         actualizar_sdk_config(ip=ip_vector, guid=new_guid)
@@ -196,6 +245,53 @@ def renovar_token_wirepod(ip_vector: Optional[str] = None) -> bool:
     except Exception as err:
         log.error("Error solicitando UserAuthenticationRequest a Vector: %s", err)
         return False
+
+
+class TokenHealer:
+    """Renovacion de token serializada y con backoff.
+
+    Antes, cada hilo/cliente que veia un 401 lanzaba su propia renovacion: se
+    pisaban entre si y martilleaban Wire-Pod/Vector.  Ahora una sola renovacion
+    a la vez (lock), con enfriamiento tras exito y backoff exponencial tras fallo.
+    Quien llega mientras otro renueva espera y reutiliza su resultado.
+    """
+
+    def __init__(self, renovar=None, clock=time.monotonic) -> None:
+        self._renovar = renovar or renovar_token_wirepod
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._next_ok = 0.0          # no renovar antes de este instante
+        self._fails = 0
+        self._last_result = False
+        self.renovaciones = 0
+
+    def heal(self, ip_vector: Optional[str] = None, motivo: str = "") -> bool:
+        with self._lock:                      # serializa: los demas esperan aqui
+            now = self._clock()
+            if now < self._next_ok:
+                # Otro hilo acaba de renovar (o fallo hace poco): reutilizar.
+                log.debug("heal(%s) omitido: enfriamiento %.0fs (ultimo=%s)",
+                          motivo, self._next_ok - now, self._last_result)
+                return self._last_result
+            try:
+                ok = bool(self._renovar(ip_vector))
+            except Exception as e:  # noqa: BLE001
+                log.error("heal(%s) excepcion: %s", motivo, e)
+                ok = False
+            self._last_result = ok
+            if ok:
+                self._fails = 0
+                self.renovaciones += 1
+                self._next_ok = self._clock() + RENEW_COOLDOWN_OK_S
+            else:
+                self._fails += 1
+                espera = min(RENEW_BACKOFF_MAX_S,
+                             RENEW_BACKOFF_MIN_S * (2 ** (self._fails - 1)))
+                self._next_ok = self._clock() + espera
+            return ok
+
+
+HEALER = TokenHealer()
 
 
 def verificar_y_reparar_conexion() -> Tuple[bool, str]:
@@ -232,10 +328,9 @@ def verificar_y_reparar_conexion() -> Tuple[bool, str]:
             log.info(msg)
             return True, msg
     except Exception as e:
-        err_str = str(e)
-        if "401" in err_str or "UNAUTHENTICATED" in err_str or "unauthorized" in err_str.lower():
+        if es_error_401(e):
             log.warning("Token gRPC desautenticado (401). Iniciando autorenovación con Wire-Pod...")
-            ok = renovar_token_wirepod(ip_actual)
+            ok = HEALER.heal(ip_actual, motivo="verificar_y_reparar")
             if ok:
                 return True, "Token gRPC renovado exitosamente con Wire-Pod."
             return False, "Fallo al autorenovar token con Wire-Pod."
