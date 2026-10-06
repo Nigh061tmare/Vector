@@ -190,6 +190,9 @@ SEGUIR_CUERPO = _flag("SEGUIR_CUERPO")
 MODO_PATRULLA = _flag("MODO_PATRULLA")
 MODO_NOCTURNO_SUAVE = _flag("MODO_NOCTURNO_SUAVE")
 HABLAR_PENSAMIENTOS = _flag("HABLAR_PENSAMIENTOS")
+# Vida animal (FSM + movimiento suave + mirada). Opt-in: sin probar en hardware.
+MODO_VIDA = _flag("MODO_VIDA", "0")
+_ESCENA_VIDA: Dict[str, Any] = {}     # la rellena el reflejo mosca (nombre/side/near/novel)
 AUDIO_INPUT_DEVICE = os.getenv("AUDIO_INPUT_DEVICE", "K38").strip()
 
 SHOW_CAMERA = False
@@ -3293,7 +3296,16 @@ def ejecutar(
             qhabla.put(random.choice(FRASES["capricho"]))
         return "capricho"
 
-    r = explorar(robot, c, mapa, m, obs)
+    if MODO_VIDA:
+        try:
+            import vector_life
+            esc = _ESCENA_VIDA if _ESCENA_VIDA.get("on") else {}
+            r = vector_life.vivir(robot, 6.0, scene=dict(esc), threat=min(1.0, c.miedo / 100.0))
+        except Exception as e:  # nunca dejar al robot sin comportamiento
+            log.warning("MODO_VIDA fallo (%s); uso explorar clasico", e)
+            r = explorar(robot, c, mapa, m, obs)
+    else:
+        r = explorar(robot, c, mapa, m, obs)
     c.ev("exploracion"); habito(m, "exp_" + r); stat(m, "exploraciones")
     return r
 
@@ -4282,6 +4294,8 @@ def main() -> None:
                         last["flybrain"] = now
                         try:
                             fc = fly_reflex.tick(mapa=mapa)
+                            if fc and isinstance(fc.get("scene"), dict):
+                                _ESCENA_VIDA.clear(); _ESCENA_VIDA.update(fc["scene"])
                             # Protocolo de chirps: oir senales y emitir las propias
                             try:
                                 gestionar_talk(talk, fly_reflex, fc, last)
