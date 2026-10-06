@@ -90,6 +90,7 @@ class Vida:
         self._bat: Dict[str, float] = {}
         self._draw_eyes = draw_eyes
         self._t_eyes = 0.0
+        self.last: Optional[Decision] = None
         self.hour_fn: Callable[[], int] = lambda: time.localtime().tm_hour
         self.scene: Dict[str, Any] = {}        # {"name","side","near","novel"} (del visor/VL)
         self.threat = 0.0
@@ -114,6 +115,8 @@ class Vida:
             cliff=s["cliff"], picked_up=s["picked_up"], pos_mm=s["pos_mm"],
             heading_deg=s["heading_deg"])
         d = self.behavior.update(x_in)
+        self.last = d
+        self._pose = pose
 
         # cuerpo: ruedas suaves + cabeza con sacadas + ojos
         self.motion.set_target(d.linear, d.turn, ttl=0.4)
@@ -137,6 +140,34 @@ class Vida:
 
 
 _VIDAS: Dict[int, Vida] = {}
+
+
+def snapshot() -> Dict[str, Any]:
+    """Estado legible para NEXUS (/api/vida). Vacio si MODO_VIDA no ha arrancado."""
+    if not _VIDAS:
+        return {"activo": False}
+    v = list(_VIDAS.values())[-1]
+    d = v.last
+    l, r = v.motion.speeds
+    pose = getattr(v, "_pose", (0.0, 0.0, 0.0))
+    return {
+        "activo": True,
+        "estado": d.state.value if d else "-",
+        "razon": d.razon if d else "",
+        "ojos": d.eyes if d else "",
+        "linear": round(d.linear, 2) if d else 0.0,
+        "turn": round(d.turn, 2) if d else 0.0,
+        "ruedas": {"left": round(l, 1), "right": round(r, 1)},
+        "miedo": round(v.behavior.miedo, 1),
+        "personalidad": v.behavior.p.descripcion(),
+        "rasgos": {k: getattr(v.behavior.p, k) for k in
+                   ("audacia", "curiosidad", "sociabilidad", "energia")},
+        "cabeza_deg": round(v.gaze.pos, 1),
+        "pupila": round(v.eyes.pupil, 2),
+        "timeline": v.behavior.timeline(25),
+        "mapa": v.grid.to_ascii(pose, half=12),
+        "objetos": v.objects.summary()[:8],
+    }
 
 
 def vivir(robot: Any, segundos: float = 6.0, scene: Optional[Dict[str, Any]] = None,

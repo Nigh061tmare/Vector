@@ -293,6 +293,40 @@ canvas{width:100%;display:block;border-radius:9px;background:#05080d}
     <div style="margin-top:11px;max-height:170px;overflow-y:auto" id="talk-log"></div>
   </div>
 
+  <!-- VIDA ANIMAL -->
+  <div class="card c12" id="card-vida">
+    <h2><span class="dot"></span>Vida · qué hace y por qué</h2>
+    <div class="tgrid">
+      <div class="titem"><div class="tlab">Comportamiento</div>
+        <div class="tval" id="v-estado" style="color:var(--cy)">--</div></div>
+      <div class="titem"><div class="tlab">Personalidad</div>
+        <div class="tval" id="v-pers" style="font-size:.8rem">--</div></div>
+      <div class="titem"><div class="tlab">Rueda izq (mm/s)</div>
+        <div class="tval" id="v-l">--</div>
+        <div class="bar"><i id="v-lbar" style="width:0%;background:var(--cy)"></i></div></div>
+      <div class="titem"><div class="tlab">Rueda der (mm/s)</div>
+        <div class="tval" id="v-r">--</div>
+        <div class="bar"><i id="v-rbar" style="width:0%;background:var(--mg)"></i></div></div>
+      <div class="titem"><div class="tlab">Miedo</div>
+        <div class="tval" id="v-miedo">--</div>
+        <div class="bar"><i id="v-miedobar" style="width:0%;background:var(--gr)"></i></div></div>
+      <div class="titem"><div class="tlab">Cabeza · pupila</div>
+        <div class="tval" id="v-head" style="font-size:.85rem">--</div></div>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px">
+      <div style="flex:2;min-width:260px">
+        <div class="tlab">Línea de tiempo (en lenguaje natural)</div>
+        <div id="v-tl" style="font-size:.82rem;max-height:210px;overflow:auto;margin-top:5px"></div>
+      </div>
+      <div style="flex:1;min-width:230px">
+        <div class="tlab">Mapa (R = Vector, H = base, # obstáculo)</div>
+        <pre id="v-map" style="font-size:.62rem;line-height:.95;margin:5px 0 0;color:var(--cy)">--</pre>
+        <div class="tlab" style="margin-top:8px">Objetos recordados</div>
+        <div id="v-obj" style="font-size:.8rem">--</div>
+      </div>
+    </div>
+  </div>
+
   <!-- CONTROLES -->
   <div class="card c12">
     <h2><span class="dot"></span>Control directo</h2>
@@ -453,6 +487,27 @@ async function tick(){
     renderTalkLog(k.historial||[]);
     drawWave(k.audio||[]);
     drawSpec(k.espectro||[], k.segmentos||[]);
+  }catch(e){}
+
+  // vida animal
+  try{
+    const v = await (await fetch('/api/vida')).json();
+    $('card-vida').style.display = v.activo ? '' : 'none';
+    if(v.activo){
+      $('v-estado').textContent = v.estado+' · '+(v.ojos||'');
+      $('v-pers').textContent = v.personalidad||'--';
+      const w = v.ruedas||{left:0,right:0};
+      $('v-l').textContent = w.left; $('v-r').textContent = w.right;
+      $('v-lbar').style.width = Math.min(100,Math.abs(w.left)/120*100)+'%';
+      $('v-rbar').style.width = Math.min(100,Math.abs(w.right)/120*100)+'%';
+      $('v-miedo').textContent = v.miedo; $('v-miedobar').style.width = Math.min(100,v.miedo)+'%';
+      $('v-head').textContent = v.cabeza_deg+'° · pupila '+v.pupila;
+      $('v-tl').innerHTML = (v.timeline||[]).slice().reverse().map(e=>
+        `<div class="ln"><b style="color:var(--mg)">${escapeHtml(e.estado)}</b> ${escapeHtml(e.razon)}</div>`).join('');
+      $('v-map').textContent = v.mapa||'';
+      $('v-obj').innerHTML = (v.objetos||[]).map(o=>
+        `${escapeHtml(o.name)} (${o.x},${o.y}) hace ${o.hace_s}s${o.movido?' · se movió':''}`).join('<br>')||'--';
+    }
   }catch(e){}
 
   // chat

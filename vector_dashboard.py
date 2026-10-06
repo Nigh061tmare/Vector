@@ -639,6 +639,15 @@ def get_fly():
     except Exception as e:
         return JSONResponse(content={"connected": False, "error": str(e)})
 
+@app.get("/api/vida")
+def get_vida():
+    """Estado de la vida animal: FSM, ruedas L/R, linea de tiempo, mapa y objetos."""
+    try:
+        import vector_life
+        return JSONResponse(content=vector_life.snapshot())
+    except Exception as e:
+        return JSONResponse(content={"activo": False, "error": str(e)})
+
 @app.get("/api/talk")
 def get_talk():
     """Estado del protocolo de chirps (Flyctor): emisor + receptor."""
