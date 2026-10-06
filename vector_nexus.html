@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vector Ultra 13.5 · NEXUS</title>
+<style>
+:root{
+  --bg:#04070d; --panel:#0a1018; --panel2:#0d1520; --line:#172233;
+  --txt:#c8d6e5; --dim:#5c7186; --cy:#22d3ee; --mg:#e879f9; --gr:#34d399;
+  --or:#fbbf24; --rd:#f87171; --bl:#60a5fa;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:radial-gradient(1200px 700px at 20% -10%,#0b1a2b 0%,var(--bg) 55%);
+  color:var(--txt);font-family:'Segoe UI',system-ui,sans-serif;
+  min-height:100vh;padding:14px;font-size:14px;
+}
+h1,h2,h3{font-weight:600;letter-spacing:.5px}
+.mono{font-family:'Cascadia Code',Consolas,monospace}
+
+/* ---------- header ---------- */
+header{
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:12px 18px;margin-bottom:14px;border-radius:14px;
+  background:linear-gradient(90deg,rgba(34,211,238,.10),rgba(232,121,249,.06));
+  border:1px solid var(--line);
+}
+.logo{font-size:1.25rem;font-weight:700;
+  background:linear-gradient(90deg,var(--cy),var(--mg));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.pill{padding:4px 12px;border-radius:999px;font-size:.75rem;font-weight:700;
+  border:1px solid var(--line);background:var(--panel)}
+.pill.on{color:var(--gr);border-color:rgba(52,211,153,.45);
+  background:rgba(52,211,153,.10)}
+.pill.off{color:var(--rd);border-color:rgba(248,113,113,.45);
+  background:rgba(248,113,113,.10)}
+.hstat{display:flex;gap:6px;align-items:baseline;font-size:.78rem;color:var(--dim)}
+.hstat b{color:var(--txt);font-size:.95rem;font-family:'Cascadia Code',monospace}
+.spacer{flex:1}
+
+/* ---------- grid ---------- */
+.grid{display:grid;gap:14px;grid-template-columns:repeat(12,1fr)}
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:14px;position:relative;overflow:hidden;
+}
+.card::before{content:'';position:absolute;inset:0 0 auto 0;height:2px;
+  background:linear-gradient(90deg,var(--cy),transparent 70%);opacity:.55}
+.card h2{font-size:.78rem;text-transform:uppercase;letter-spacing:1.6px;
+  color:var(--dim);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.card h2 .dot{width:7px;height:7px;border-radius:50%;background:var(--cy);
+  box-shadow:0 0 8px var(--cy)}
+.c4{grid-column:span 4}.c5{grid-column:span 5}.c6{grid-column:span 6}
+.c7{grid-column:span 7}.c8{grid-column:span 8}.c12{grid-column:span 12}
+@media(max-width:1100px){.c4,.c5,.c6,.c7,.c8{grid-column:span 12}}
+
+/* ---------- camara ---------- */
+.camwrap{position:relative;border-radius:10px;overflow:hidden;
+  background:#000;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center}
+.camwrap img{width:100%;height:100%;object-fit:contain;display:block}
+.camoff{color:var(--dim);font-size:.85rem;text-align:center;padding:20px}
+.overlay{position:absolute;inset:0;pointer-events:none}
+.ovbox{position:absolute;border:2px solid var(--mg);border-radius:6px;
+  box-shadow:0 0 14px rgba(232,121,249,.55)}
+.ovlabel{position:absolute;top:-20px;left:0;font-size:.72rem;font-weight:700;
+  color:#fff;background:rgba(232,121,249,.85);padding:1px 7px;border-radius:5px;
+  white-space:nowrap}
+.seebar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.tag{padding:3px 9px;border-radius:7px;font-size:.74rem;font-weight:600;
+  background:var(--panel2);border:1px solid var(--line)}
+.tag.vl{color:var(--mg);border-color:rgba(232,121,249,.4)}
+.tag.fresh{color:var(--gr);border-color:rgba(52,211,153,.4)}
+
+/* ---------- telemetria ---------- */
+.tgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
+.titem{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:9px 11px}
+.tlab{font-size:.68rem;color:var(--dim);text-transform:uppercase;
+  letter-spacing:1px;margin-bottom:3px}
+.tval{font-size:1.05rem;font-weight:700;font-family:'Cascadia Code',monospace}
+.bar{height:6px;border-radius:4px;background:#111a26;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:4px;transition:width .5s}
+
+/* ---------- chat ---------- */
+.chat{height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:7px;
+  padding-right:5px}
+.chat::-webkit-scrollbar{width:6px}
+.chat::-webkit-scrollbar-thumb{background:#1e2c3e;border-radius:3px}
+.msg{padding:7px 10px;border-radius:9px;font-size:.84rem;line-height:1.35;
+  border:1px solid transparent;max-width:92%}
+.msg .who{font-size:.66rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.8px;opacity:.75;display:block;margin-bottom:2px}
+.m-vector{background:rgba(34,211,238,.09);border-color:rgba(34,211,238,.25);
+  align-self:flex-start}
+.m-vector .who{color:var(--cy)}
+.m-human{background:rgba(52,211,153,.09);border-color:rgba(52,211,153,.25);
+  align-self:flex-end}
+.m-human .who{color:var(--gr)}
+.m-think{background:rgba(232,121,249,.07);border-color:rgba(232,121,249,.2);
+  align-self:flex-start;font-style:italic;opacity:.9}
+.m-think .who{color:var(--mg)}
+.m-sys{background:#0d1520;border-color:var(--line);align-self:center;
+  font-size:.74rem;color:var(--dim)}
+
+/* ---------- controles ---------- */
+.row{display:flex;gap:7px;flex-wrap:wrap}
+button{
+  background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+  border-radius:8px;padding:7px 12px;font-size:.78rem;font-weight:600;
+  cursor:pointer;transition:.15s;font-family:inherit;
+}
+button:hover{border-color:var(--cy);color:var(--cy);
+  box-shadow:0 0 12px rgba(34,211,238,.22)}
+button.act{background:rgba(34,211,238,.15);border-color:var(--cy);color:var(--cy)}
+button.talk{border-color:rgba(232,121,249,.45);color:var(--mg)}
+button.talk:hover{background:rgba(232,121,249,.15);color:#fff}
+input[type=text]{
+  flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:8px 11px;color:var(--txt);font-size:.82rem;font-family:inherit;min-width:0
+}
+input[type=text]:focus{outline:none;border-color:var(--cy)}
+canvas{width:100%;display:block;border-radius:9px;background:#05080d}
+
+/* ---------- neuronas ---------- */
+.ngrid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:10px}
+@media(max-width:700px){.ngrid{grid-template-columns:1fr}}
+.ncell{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+  padding:8px 10px}
+.nlab{font-size:.65rem;color:var(--dim);text-transform:uppercase;letter-spacing:.9px}
+.nval{font-size:1rem;font-weight:700;font-family:'Cascadia Code',monospace}
+
+/* ---------- chirps ---------- */
+.vocab{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+@media(max-width:800px){.vocab{grid-template-columns:repeat(2,1fr)}}
+.vcard{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:10px;text-align:center}
+.vcard .em{font-size:1.5rem;line-height:1}
+.vcard .nm{font-size:.78rem;font-weight:700;margin:5px 0 2px}
+.vcard .dt{font-size:.66rem;color:var(--dim)}
+.vcard button{width:100%;margin-top:7px}
+.wave{display:flex;align-items:flex-end;gap:2px;height:26px;justify-content:center;
+  margin:6px 0}
+.wave i{width:3px;background:var(--mg);border-radius:2px;opacity:.8}
+.logline{font-size:.75rem;font-family:'Cascadia Code',monospace;
+  padding:4px 8px;border-radius:6px;background:var(--panel2);margin-bottom:4px;
+  display:flex;gap:8px;align-items:center}
+.logline.out{border-left:2px solid var(--cy)}
+.logline.in{border-left:2px solid var(--mg)}
+.logline .tm{color:var(--dim);font-size:.68rem}
+.flash{animation:fl 1s ease}
+@keyframes fl{0%{background:rgba(232,121,249,.35)}100%{background:var(--panel2)}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">◉ VECTOR ULTRA 13.5 · NEXUS</div>
+  <span class="pill" id="p-vec">VECTOR</span>
+  <span class="pill" id="p-fly">MOSCA</span>
+  <span class="pill" id="p-vl">VISIÓN</span>
+  <span class="pill" id="p-talk">CHIRPS</span>
+  <div class="spacer"></div>
+  <div class="hstat">BAT <b id="h-bat">--</b></div>
+  <div class="hstat">ToF <b id="h-tof">--</b></div>
+  <div class="hstat">NEUR <b id="h-neu">--</b></div>
+  <div class="hstat">FPS <b id="h-fps">--</b></div>
+  <div class="hstat"><b id="h-clock">--:--:--</b></div>
+</header>
+
+<div class="grid">
+
+  <!-- CÁMARA -->
+  <div class="card c7">
+    <h2><span class="dot"></span>Cámara en vivo · lo que ve</h2>
+    <div class="camwrap">
+      <img id="cam" src="/video_feed" alt="cámara Vector">
+      <div class="overlay" id="ov"></div>
+      <div id="cam-alert" style="position:absolute;top:8px;right:8px;display:none;
+        background:rgba(248,113,113,.92);color:#04070d;padding:4px 10px;
+        border-radius:6px;font-size:.72rem;font-weight:700">CÁMARA CAÍDA</div>
+    </div>
+    <div class="seebar">
+      <span class="tag vl" id="vl-prov">VL: --</span>
+      <span class="tag" id="vl-obj">sin objetos</span>
+      <span class="tag fresh" id="vl-age">--</span>
+      <span class="tag" id="cam-state">CÁMARA: --</span>
+      <div class="spacer"></div>
+      <button onclick="camMode('normal')" id="bcn">Normal</button>
+      <button onclick="camMode('brillante')" id="bcb" class="act">Brillante</button>
+      <button onclick="camMode('nocturna')" id="bco">Nocturna</button>
+    </div>
+  </div>
+
+  <!-- MENTE + TELEMETRÍA -->
+  <div class="card c5">
+    <h2><span class="dot"></span>Su mente · estado interno</h2>
+    <div class="tgrid">
+      <div class="titem"><div class="tlab">Batería</div>
+        <div class="tval" id="t-bat">--</div>
+        <div class="bar"><i id="t-batbar" style="width:0%;background:var(--gr)"></i></div></div>
+      <div class="titem"><div class="tlab">Ánimo</div>
+        <div class="tval" id="t-animo" style="color:var(--mg)">--</div></div>
+      <div class="titem"><div class="tlab">Estado</div>
+        <div class="tval" id="t-estado" style="color:var(--cy)">--</div></div>
+      <div class="titem"><div class="tlab">Cargador</div>
+        <div class="tval" id="t-chg">--</div></div>
+      <div class="titem"><div class="tlab">Distancia (ToF)</div>
+        <div class="tval" id="t-tof">--</div></div>
+      <div class="titem"><div class="tlab">Modo cámara</div>
+        <div class="tval" id="t-cam" style="font-size:.85rem">--</div></div>
+    </div>
+    <div style="margin-top:11px">
+      <div class="tlab">Última frase</div>
+      <div id="t-frase" style="font-size:.85rem;color:var(--cy);margin-top:3px">--</div>
+      <div class="tlab" style="margin-top:9px">Último pensamiento</div>
+      <div id="t-pens" style="font-size:.85rem;color:var(--mg);font-style:italic;margin-top:3px">--</div>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="card c5">
+    <h2><span class="dot"></span>Lo que dice · conversación</h2>
+    <div class="chat" id="chat"></div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="in-say" placeholder="Escribe lo que quieres que diga…"
+             onkeydown="if(event.key==='Enter')decir()">
+      <button onclick="decir()">Decir</button>
+    </div>
+    <div class="row" style="margin-top:7px">
+      <input type="text" id="in-inter" placeholder="Háblale (intercom)…"
+             onkeydown="if(event.key==='Enter')intercom()">
+      <button onclick="intercom()">Enviar</button>
+    </div>
+    <div class="row" style="margin-top:7px">
+      <input type="text" id="in-vault" placeholder="Pregunta al Vault (RAG)…"
+             onkeydown="if(event.key==='Enter')vault()">
+      <button onclick="vault()">Buscar</button>
+    </div>
+    <div id="vault-res" style="font-size:.78rem;color:var(--bl);margin-top:7px"></div>
+  </div>
+
+  <!-- CEREBRO MOSCA -->
+  <div class="card c7">
+    <h2><span class="dot"></span>Cerebro-mosca · connectome MaleCNS</h2>
+    <canvas id="cv-spike" height="80"></canvas>
+    <div style="font-size:.66rem;color:var(--dim);margin:5px 0 8px">
+      RÁSTER DE NEURONAS (actividad acumulada por grupo)</div>
+    <canvas id="cv-eye" height="66"></canvas>
+    <div style="font-size:.66rem;color:var(--dim);margin:5px 0 8px">
+      RETINA · PANORAMA VISUAL 1-D (lo que entra a la mosca)</div>
+    <canvas id="cv-bmap" height="150"></canvas>
+    <div style="font-size:.66rem;color:var(--dim);margin:5px 0 8px">
+      MAPA CEREBRAL 72×96</div>
+    <div class="ngrid">
+      <div class="ncell"><div class="nlab">Modo motor</div>
+        <div class="nval" id="n-mode" style="color:var(--or)">--</div></div>
+      <div class="ncell"><div class="nlab">Rueda L / R</div>
+        <div class="nval" id="n-wheel">-- / --</div></div>
+      <div class="ncell"><div class="nlab">LC4 · amenaza</div>
+        <div class="nval" id="n-lc4">--</div></div>
+      <div class="ncell"><div class="nlab">LPLC2 · looming</div>
+        <div class="nval" id="n-lplc2">--</div></div>
+      <div class="ncell"><div class="nlab">DNp01 · escape</div>
+        <div class="nval" id="n-dn" style="color:var(--rd)">--</div></div>
+      <div class="ncell"><div class="nlab">Pasos / spikes</div>
+        <div class="nval" id="n-steps">--</div></div>
+    </div>
+  </div>
+
+  <!-- CHIRPS -->
+  <div class="card c12">
+    <h2><span class="dot"></span>Protocolo de chirps · comunicación por sonido (Flyctor)</h2>
+    <div class="vocab" id="vocab"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div>
+        <div class="tlab" style="margin-bottom:5px">ONDA · lo que oye el micrófono</div>
+        <canvas id="cv-wave" height="72"></canvas>
+      </div>
+      <div>
+        <div class="tlab" style="margin-bottom:5px">ESPECTRO · patrón de frecuencia</div>
+        <canvas id="cv-spec" height="72"></canvas>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px;align-items:center">
+      <span class="tag" id="tk-mic">MIC: --</span>
+      <span class="tag" id="tk-out">EMITIDOS: 0</span>
+      <span class="tag" id="tk-in">OÍDOS: 0</span>
+      <div class="spacer"></div>
+      <span class="tag" id="tk-last-out">último emitido: --</span>
+      <span class="tag vl" id="tk-last-in">último oído: --</span>
+    </div>
+    <div style="margin-top:11px;max-height:170px;overflow-y:auto" id="talk-log"></div>
+  </div>
+
+  <!-- CONTROLES -->
+  <div class="card c12">
+    <h2><span class="dot"></span>Control directo</h2>
+    <div class="row">
+      <button onclick="accion('foto')">📷 Foto HD</button>
+      <button onclick="accion('patrulla')">🛡 Patrulla</button>
+      <button onclick="accion('baile')">💃 Baile</button>
+      <button onclick="accion('dado')">🎲 Dado</button>
+      <button onclick="accion('saludo')">👋 Saludo</button>
+      <button onclick="ctrl('dormir')">😴 Dormir</button>
+      <button onclick="ctrl('despertar')">☀️ Despertar</button>
+      <button onclick="ctrl('cargador')">🔌 Ir al cargador</button>
+      <button onclick="ctrl('quieto')">⏸ Quieto</button>
+    </div>
+    <div class="row" style="margin-top:9px">
+      <span class="tlab" style="align-self:center">Ojos:</span>
+      <button onclick="color('verde')">🟢</button>
+      <button onclick="color('azul')">🔵</button>
+      <button onclick="color('rojo')">🔴</button>
+      <button onclick="color('morado')">🟣</button>
+      <button onclick="color('amarillo')">🟡</button>
+      <button onclick="color('blanco')">⚪</button>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast" style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  background:rgba(34,211,238,.92);color:#04070d;padding:9px 20px;border-radius:9px;
+  font-weight:700;font-size:.85rem;opacity:0;transition:.3s;pointer-events:none;
+  z-index:99">ok</div>
+
+<script>
+const TOKEN = "{{DASHBOARD_TOKEN}}";
+const $ = id => document.getElementById(id);
+let toastT;
+
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.style.opacity='1';
+  clearTimeout(toastT); toastT=setTimeout(()=>t.style.opacity='0',1800);
+}
+async function post(url, body){
+  try{
+    const r = await fetch(url,{method:'POST',
+      headers:{'Content-Type':'application/json','X-Auth-Token':TOKEN},
+      body:JSON.stringify(body||{})});
+    return await r.json();
+  }catch(e){ return {}; }
+}
+function decir(){ const v=$('in-say').value.trim(); if(!v)return;
+  post('/api/decir',{texto:v}); $('in-say').value=''; toast('Diciendo…'); }
+function intercom(){ const v=$('in-inter').value.trim(); if(!v)return;
+  post('/api/intercom',{texto:v}); $('in-inter').value=''; toast('Enviado a Vector'); }
+async function vault(){ const v=$('in-vault').value.trim(); if(!v)return;
+  $('vault-res').textContent='Consultando notas en RAM…';
+  const d = await post('/api/vault',{query:v});
+  $('vault-res').textContent = d.resultado || 'Sin resultados.'; }
+function accion(a){ post('/api/accion',{accion:a}); toast('Acción: '+a); }
+function ctrl(a){ post('/api/control',{accion:a}); toast('Control: '+a); }
+function color(c){ post('/api/color',{color:c}); toast('Color: '+c); }
+function camMode(m){
+  post('/api/cam_mode',{modo:m}); toast('Cámara: '+m);
+  ['bcn','bcb','bco'].forEach(i=>$(i).classList.remove('act'));
+  $({normal:'bcn',brillante:'bcb',nocturna:'bco'}[m]).classList.add('act');
+}
+function emitir(sig){ post('/api/talk',{signal:sig}); toast('Chirp: '+sig); }
+
+/* ---------------- paneles ---------------- */
+const TALK_EMOJI={objeto:'🔍',acercate:'➡️',bloqueado:'🚧',ayuda:'🆘'};
+
+function fmtAge(t){
+  if(!t) return '--';
+  const s = Math.max(0, Date.now()/1000 - t);
+  return s<60 ? s.toFixed(0)+'s' : (s/60).toFixed(1)+'min';
+}
+
+async function tick(){
+  // reloj
+  $('h-clock').textContent = new Date().toLocaleTimeString('es-ES');
+
+  // telemetria
+  try{
+    const t = await (await fetch('/api/telemetria')).json();
+    const on = !!t.online;
+    $('p-vec').textContent = on?'VECTOR ONLINE':'VECTOR OFFLINE';
+    $('p-vec').className = 'pill '+(on?'on':'off');
+    $('h-bat').textContent = (t.bateria_pct||0)+'%';
+    $('h-tof').textContent = Math.round(t.tof_mm||0)+'mm';
+    $('t-bat').textContent = (t.bateria_v||0).toFixed(2)+'V · '+(t.bateria_pct||0)+'%';
+    $('t-batbar').style.width = (t.bateria_pct||0)+'%';
+    $('t-batbar').style.background = (t.bateria_pct||0)<25?'var(--rd)':
+      ((t.bateria_pct||0)<50?'var(--or)':'var(--gr)');
+    $('t-animo').textContent = t.animo||'--';
+    $('t-estado').textContent = t.estado||'--';
+    $('t-chg').textContent = t.en_cargador?'SÍ ⚡':'no';
+    $('t-chg').style.color = t.en_cargador?'var(--gr)':'var(--txt)';
+    $('t-tof').textContent = Math.round(t.tof_mm||0)+' mm';
+    $('t-cam').textContent = t.modo_camara||'--';
+    $('t-frase').textContent = t.ultima_frase||'--';
+    $('t-pens').textContent = t.ultimo_pensamiento||'--';
+  }catch(e){}
+
+  // salud de la camara (24h): avisar si el frame esta obsoleto
+  try{
+    const h = await (await fetch('/api/health')).json();
+    const viva = !!h.camara_viva;
+    const edad = (h.frame_edad_s==null) ? '--' : h.frame_edad_s.toFixed(0)+'s';
+    $('cam-alert').style.display = viva ? 'none' : 'block';
+    $('cam-state').textContent = viva ? ('CÁMARA: OK · '+edad) : ('CÁMARA: CAÍDA · '+edad);
+    $('cam-state').style.color = viva ? 'var(--gr)' : 'var(--rd)';
+    $('cam-state').style.borderColor = viva ? 'rgba(52,211,153,.4)' : 'rgba(248,113,113,.5)';
+  }catch(e){}
+
+  // cerebro-mosca
+  try{
+    const f = await (await fetch('/api/fly')).json();
+    const on = !!f.connected;
+    $('p-fly').textContent = on?'MOSCA ONLINE':'MOSCA OFFLINE';
+    $('p-fly').className = 'pill '+(on?'on':'off');
+    $('h-neu').textContent = (f.neurons||0).toLocaleString('es-ES');
+    $('h-fps').textContent = (f.fps||0).toFixed(0);
+    const m = f.motor||{}, s = f.snapshot||{};
+    $('n-mode').textContent = m.mode||'--';
+    $('n-wheel').textContent = (m.left??0).toFixed(2)+' / '+(m.right??0).toFixed(2);
+    $('n-lc4').textContent = (s.LC4??0).toFixed(2);
+    $('n-lplc2').textContent = (s.LPLC2??0).toFixed(2);
+    $('n-dn').textContent = (s.DN_DNp01??0).toFixed(2);
+    $('n-steps').textContent = (s.steps||0).toLocaleString('es-ES');
+    drawSpike(f.spikes||[]);
+    drawEye(f.eye||[]);
+    drawBmap(f.bmap||[]);
+    // visión
+    const sc = f.scene||{};
+    $('p-vl').textContent = sc.on?'VISIÓN ON':'VISIÓN OFF';
+    $('p-vl').className = 'pill '+(sc.on?'on':'off');
+    $('vl-prov').textContent = 'VL: '+(sc.provider||'--');
+    $('vl-age').textContent = fmtAge(sc.t);
+    const objs = (sc.last&&sc.last.objects)||[];
+    $('vl-obj').textContent = objs.length ?
+      objs.map(o=>`${o.name} (${o.side<0?'izq':'der'}, ${o.near.toFixed(1)})`).join(' · ')
+      : 'sin objetos';
+    drawOverlay(objs);
+  }catch(e){}
+
+  // chirps
+  try{
+    const k = await (await fetch('/api/talk')).json();
+    const on = !!(k.enabled && k.activo);
+    $('p-talk').textContent = k.enabled ? (k.activo?'CHIRPS ESCUCHANDO':'CHIRPS MUDO') : 'CHIRPS OFF';
+    $('p-talk').className = 'pill '+(on?'on':'off');
+    $('tk-mic').textContent = 'MIC: '+(k.mic||(k.mic_err?'sin mic':'--'));
+    $('tk-out').textContent = 'EMITIDOS: '+(k.emitidos||0);
+    $('tk-in').textContent = 'OÍDOS: '+(k.oidos||0);
+    const uo = k.ultimo_emitido, ui = k.ultimo_oido;
+    $('tk-last-out').textContent = uo ? `último emitido: ${uo.emoji} ${uo.label} (${uo.hora})` : 'último emitido: --';
+    $('tk-last-in').textContent = ui ? `último oído: ${ui.emoji} ${ui.label} (${ui.hora}, ${Math.round((ui.confidence||0)*100)}%)` : 'último oído: --';
+    renderVocab(k.vocabulario||[]);
+    renderTalkLog(k.historial||[]);
+    drawWave(k.audio||[]);
+    drawSpec(k.espectro||[], k.segmentos||[]);
+  }catch(e){}
+
+  // chat
+  try{
+    const log = await (await fetch('/api/chat_log')).json();
+    renderChat(log||[]);
+  }catch(e){}
+}
+
+/* ---------------- render ---------------- */
+let lastChatN=-1, lastTalkN=-1;
+function renderChat(items){
+  if(items.length===lastChatN) return;
+  lastChatN=items.length;
+  const box=$('chat');
+  box.innerHTML = items.slice(-40).map(m=>{
+    const a=(m.autor||'').toLowerCase();
+    let cls='m-sys';
+    if(a.includes('vector')) cls='m-vector';
+    else if(a.includes('pensamiento')) cls='m-think';
+    else if(a.includes('tú')||a.includes('humano')||a.includes('web')||
+            a.includes('intercom')||a.includes('jose')) cls='m-human';
+    return `<div class="msg ${cls}"><span class="who">${m.autor||'?'} · ${m.hora||''}</span>${escapeHtml(m.texto||'')}</div>`;
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+function renderVocab(v){
+  if($('vocab').dataset.n == v.length) return;
+  $('vocab').dataset.n = v.length;
+  $('vocab').innerHTML = v.map(s=>{
+    const bars = Array.from({length:s.chirps},(_,i)=>
+      `<i style="height:${s.dur>0.3?24:12}px"></i>`).join('');
+    return `<div class="vcard">
+      <div class="em">${s.emoji}</div>
+      <div class="wave">${bars}</div>
+      <div class="nm">${s.label}</div>
+      <div class="dt">${s.chirps} chirp(s) · ${s.freq} Hz · ${(s.dur*1000).toFixed(0)} ms</div>
+      <button class="talk" onclick="emitir('${s.id}')">▶ Emitir</button>
+    </div>`;
+  }).join('');
+}
+function renderTalkLog(h){
+  if(h.length===lastTalkN) return;
+  lastTalkN=h.length;
+  const box=$('talk-log');
+  box.innerHTML = h.slice().reverse().map(e=>`
+    <div class="logline ${e.dir==='emitido'?'out':'in'}">
+      <span class="tm">${e.hora}</span>
+      <span>${e.dir==='emitido'?'🔊':'👂'}</span>
+      <span>${e.emoji||''} <b>${e.label||e.signal}</b></span>
+      <span class="tm">${e.nota||''}</span>
+    </div>`).join('') || '<div class="logline">sin actividad todavía</div>';
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+/* ---------------- canvases ---------------- */
+function fitCanvas(cv){
+  const w = cv.clientWidth||600;
+  if(cv.width!==w){ cv.width=w; }
+  return cv.getContext('2d');
+}
+function drawWave(a){
+  const cv=$('cv-wave'); if(!cv) return;
+  const ctx=fitCanvas(cv), W=cv.width, H=cv.height;
+  ctx.fillStyle='#05080d'; ctx.fillRect(0,0,W,H);
+  if(!a.length) return;
+  const mid=H/2;
+  ctx.strokeStyle='#22d3ee'; ctx.lineWidth=1.2;
+  for(const signo of [-1,1]){
+    ctx.globalAlpha = signo<0 ? 1 : .28;
+    ctx.beginPath();
+    for(let i=0;i<a.length;i++){
+      const x=(i/(a.length-1))*W;
+      const y=mid-(signo*a[i]*(H/2-3));
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+}
+function drawSpec(a, segs){
+  const cv=$('cv-spec'); if(!cv) return;
+  const ctx=fitCanvas(cv), W=cv.width, H=cv.height;
+  ctx.fillStyle='#05080d'; ctx.fillRect(0,0,W,H);
+  if(!a.length) return;
+  const bw=W/a.length;
+  for(let i=0;i<a.length;i++){
+    const t=a[i], h=t*(H-4);
+    ctx.fillStyle=`rgba(${Math.round(34+t*214)},${Math.round(211-t*140)},238,${0.35+t*0.65})`;
+    ctx.fillRect(i*bw, H-h, Math.max(1,bw-0.5), h);
+  }
+  if(segs && segs.length){
+    ctx.fillStyle='#e879f9'; ctx.font='11px monospace';
+    ctx.fillText('chirps detectados: '+segs.length, 6, 13);
+  }
+}
+function drawSpike(a){
+  const cv=$('cv-spike'), ctx=fitCanvas(cv), W=cv.width, H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  if(!a.length) return;
+  const mx=Math.max(...a,1);
+  ctx.fillStyle='#05080d'; ctx.fillRect(0,0,W,H);
+  for(let i=0;i<a.length;i++){
+    const x=(i/a.length)*W;
+    const h=(a[i]/mx)*(H-6);
+    const r=Math.round(34+ (a[i]/mx)*198);
+    const g=Math.round(211-(a[i]/mx)*90);
+    ctx.fillStyle=`rgb(${r},${g},238)`;
+    ctx.fillRect(x,H-h,Math.max(1,W/a.length-0.4),h);
+  }
+}
+function drawEye(a){
+  const cv=$('cv-eye'), ctx=fitCanvas(cv), W=cv.width, H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  if(!a.length) return;
+  ctx.fillStyle='#05080d'; ctx.fillRect(0,0,W,H);
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'rgba(34,211,238,.75)'); g.addColorStop(1,'rgba(34,211,238,.03)');
+  ctx.beginPath(); ctx.moveTo(0,H);
+  for(let i=0;i<a.length;i++){
+    const x=(i/(a.length-1))*W, y=H-(a[i]*(H-4));
+    ctx.lineTo(x,y);
+  }
+  ctx.lineTo(W,H); ctx.closePath(); ctx.fillStyle=g; ctx.fill();
+  ctx.strokeStyle='#22d3ee'; ctx.lineWidth=1.4; ctx.beginPath();
+  for(let i=0;i<a.length;i++){
+    const x=(i/(a.length-1))*W, y=H-(a[i]*(H-4));
+    i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+  }
+  ctx.stroke();
+}
+function drawBmap(a){
+  const cv=$('cv-bmap'), ctx=fitCanvas(cv), W=cv.width, H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  if(!a.length) return;
+  const COLS=96, ROWS=Math.ceil(a.length/COLS);
+  const mx=Math.max(...a,1);
+  const cw=W/COLS, ch=H/ROWS;
+  ctx.fillStyle='#05080d'; ctx.fillRect(0,0,W,H);
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    const v=a[r*COLS+c]||0; if(!v) continue;
+    const t=v/mx;
+    const rr=Math.round(34+t*214), gg=Math.round(211-t*150), bb=Math.round(238+t*17);
+    ctx.fillStyle=`rgba(${rr},${gg},${bb},${0.25+t*0.75})`;
+    ctx.fillRect(c*cw, r*ch, Math.ceil(cw), Math.ceil(ch));
+  }
+}
+function drawOverlay(objs){
+  const ov=$('ov');
+  if(!objs.length){ ov.innerHTML=''; return; }
+  ov.innerHTML = objs.map(o=>{
+    const left = o.side<0;              // -1 izq, +1 der
+    const near = Math.max(0.2, Math.min(1, o.near||0.5));
+    const w = 18 + near*40;             // más cerca = caja más grande
+    const h = w*0.8;
+    const x = left ? (6 + (1-near)*20) : (94 - w - (1-near)*20);
+    const y = 30 + (1-near)*22;
+    return `<div class="ovbox" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%">
+      <span class="ovlabel">${escapeHtml(o.name)} · ${left?'izq':'der'} · ${near.toFixed(2)}</span>
+    </div>`;
+  }).join('');
+}
+
+/* ---------------- arranque ---------------- */
+tick(); setInterval(tick,1000);
+$('cam').onerror=()=>{ $('cam').style.display='none';
+  if(!document.querySelector('.camoff')){
+    const d=document.createElement('div'); d.className='camoff';
+    d.innerHTML='cámara no disponible<br><small>esperando a Vector…</small>';
+    document.querySelector('.camwrap').appendChild(d);
+  }};
+</script>
+</body>
+</html>
