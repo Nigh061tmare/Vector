@@ -12,4 +12,4 @@ jobs:
           python-version: "3.12"
       - run: pip install numpy pillow opencv-python-headless pytest fastapi httpx requests mypy
       - run: python -m pytest -q tests
-      - run: python -m mypy --ignore-missing-imports --follow-imports=silent vector_motion.py vector_behavior.py vector_gaze.py vector_map.py vector_life.py vector_vad.py vector_supervisor.py
+      - run: python -m mypy --ignore-missing-imports --follow-imports=silent vector_motion.py vector_behavior.py vector_gaze.py vector_map.py vector_life.py vector_vad.py vector_supervisor.py vector_facts.py

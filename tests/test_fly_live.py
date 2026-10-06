@@ -24,7 +24,10 @@ def test_camera_survives_missing_vector_and_no_webcam(monkeypatch):
     monkeypatch.setattr(fl.time, "sleep", lambda s: real(min(s, 0.01)))
     fl._CAM.update(on=True, err="")
     t = threading.Thread(target=fl._camera_loop, daemon=True); t.start()
-    real(0.6)
+    for _ in range(100):                      # sondeo (hasta 5 s) en vez de espera fija
+        if "camara" in fl._CAM["err"].lower(): break
+        real(0.05)
+    real(0.3)
     alive = t.is_alive(); fl._CAM["on"] = False; t.join(2)
     assert alive
     assert "camara" in fl._CAM["err"].lower()
@@ -42,6 +45,6 @@ def test_webcam_failure_does_not_stop_bridge(monkeypatch):
     monkeypatch.setattr(fl.time, "sleep", lambda s: real(min(s, 0.01)))
     fl._CAM.update(on=True, err="")
     t = threading.Thread(target=fl._camera_loop, daemon=True); t.start()
-    real(0.6)
+    real(0.8)
     alive = t.is_alive(); fl._CAM["on"] = False; t.join(2)
     assert alive

@@ -195,6 +195,8 @@ MODO_NOCTURNO_SUAVE = _flag("MODO_NOCTURNO_SUAVE")
 HABLAR_PENSAMIENTOS = _flag("HABLAR_PENSAMIENTOS")
 # Vida animal (FSM + movimiento suave + mirada). Opt-in: sin probar en hardware.
 MODO_VIDA = _flag("MODO_VIDA", "0")
+# Avance continuo con rampas en vez de tramos de 12 mm (opt-in, sin probar en hardware)
+AVANZAR_CONTINUO = _flag("AVANZAR_CONTINUO", "0")
 _ESCENA_VIDA: Dict[str, Any] = {}     # la rellena el reflejo mosca (nombre/side/near/novel)
 AUDIO_INPUT_DEVICE = os.getenv("AUDIO_INPUT_DEVICE", "K38").strip()
 
@@ -1151,6 +1153,13 @@ def ctx_ia(m: Dict[str, Any], ev: str, extra: str = "") -> str:
         "{}:{}".format(d.get("rol"), d.get("texto")) for d in dias
     ], sep="; ")
 
+    try:
+        import vector_facts
+        with _mem_lock:
+            extra = vector_facts.context(m, extra or ev) + (extra or "")
+    except Exception:
+        pass
+
     # contexto CORTO: menos tokens = menos meta en Nemotron
     plantilla = (
         "Situacion:{ev}. Animo:{animo}. "
@@ -1775,6 +1784,22 @@ def avanzar_seguro(
 ) -> bool:
     recor = 0.0
     vel = vel_fija if vel_fija else (V_RAPIDA if rapido else V_NORMAL)
+    if AVANZAR_CONTINUO:
+        try:
+            from vector_motion import MotionController, drive_distance
+            mc = MotionController(robot, guard=lambda: not (es_borde(robot) or es_up(robot)))
+            _, motivo = drive_distance(
+                mc, total, vel, lambda: prox_ok(robot), lambda: es_borde(robot) or es_up(robot),
+                FRENO_MM, PELIGRO_MM, COMODO_MM)
+            if motivo in ("peligro", "inseguro"):
+                stat(m, "choques_evitados")
+                if motivo == "peligro":
+                    atras(robot, 35)
+            elif motivo in ("obstaculo", "sin_lectura"):
+                stat(m, "choques_evitados")
+            return motivo == "ok"
+        except Exception as _e_cont:
+            log.warning("avance continuo fallo (%s); uso tramos", _e_cont)
     while recor < total:
         if es_borde(robot) or es_up(robot):
             return False
@@ -3339,7 +3364,8 @@ def ejecutar(
         try:
             import vector_life
             esc = _ESCENA_VIDA if _ESCENA_VIDA.get("on") else {}
-            r = vector_life.vivir(robot, 6.0, scene=dict(esc), threat=min(1.0, c.miedo / 100.0))
+            r = vector_life.vivir(robot, 6.0, scene=dict(esc), threat=min(1.0, c.miedo / 100.0),
+                                  busy_fn=lambda: _speak_lock.locked())
         except Exception as e:  # nunca dejar al robot sin comportamiento
             log.warning("MODO_VIDA fallo (%s); uso explorar clasico", e)
             r = explorar(robot, c, mapa, m, obs)
@@ -3357,6 +3383,26 @@ def orden_voz(
     stat(m, "comandos_voz"); c.ev("voz")
     dia_push(m, "humano", bruto or orden)
     c.set_estado("escuchando")
+
+    # Memoria de hechos: "recuerda que ..." / "que te dije ...?"
+    try:
+        import vector_facts
+        _txt = bruto or data or orden
+        _hecho = vector_facts.extract(_txt)
+        _es_q, _resto = vector_facts.is_recall_query(_txt)
+        if _hecho:
+            with _mem_lock:
+                nuevo = vector_facts.add(m, _hecho)
+            guardar_mem(m)
+            decir(robot, "Vale, lo recordare." if nuevo else "Ya lo sabia, gracias.", c)
+            return
+        if _es_q:
+            with _mem_lock:
+                _resp = vector_facts.reply_for_recall(m, _resto)
+            decir(robot, _resp, c)
+            return
+    except Exception as _e_facts:
+        log.debug("facts: %s", _e_facts)
 
     # 1. Frenar inmediatamente las ruedas para atender al humano
     try:

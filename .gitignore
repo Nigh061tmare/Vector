@@ -38,3 +38,12 @@ htmlcov/
 
 # credenciales locales del SDK (GUID)
 .anki_vector/
+vida_estado.json
+vida_estado.json.tmp
+
+# copias de seguridad y logs (nunca versionar: contienen tokens)
+*.bak*
+*_backup.py
+*_BACKUP.py
+*_fase1_*.py
+*_v10_backup.py

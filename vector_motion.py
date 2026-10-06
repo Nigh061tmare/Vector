@@ -190,3 +190,65 @@ class MotionController:
             now = self._clock()
             self.tick(now - last)
             last = now
+
+
+# --- Avance continuo con ToF (alternativa a tramos de 12 mm) ------------------
+TOF_CHECK_HZ = 10.0
+FRENO_MM_DEFAULT = 285.0
+PELIGRO_MM_DEFAULT = 155.0
+COMODO_MM_DEFAULT = 430.0
+
+
+def drive_distance(
+    mc: "MotionController",
+    total_mm: float,
+    speed_mmps: float,
+    read_tof: Callable[[], Optional[float]],
+    unsafe: Callable[[], bool] = lambda: False,
+    freno_mm: float = FRENO_MM_DEFAULT,
+    peligro_mm: float = PELIGRO_MM_DEFAULT,
+    comodo_mm: float = COMODO_MM_DEFAULT,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> Tuple[float, str]:
+    """Avanza `total_mm` de forma CONTINUA (una sola rampa) vigilando el ToF a 10 Hz.
+
+    Antes: tramos de 12 mm = un RPC con arranque/parada por tramo (a tropezones).
+    Devuelve (mm_recorridos_estimados, motivo) con motivo en
+    {"ok", "obstaculo", "peligro", "sin_lectura", "inseguro"}.  Para el robot con
+    rampa de frenada salvo "peligro"/"inseguro", que son parada inmediata.
+    """
+    period = 1.0 / TOF_CHECK_HZ
+    dt = 1.0 / TICK_HZ
+    ticks_per_check = max(1, int(round(period / dt)))
+    recorrido = 0.0
+    motivo = "ok"
+    last = clock()
+    n = 0
+    while recorrido < total_mm:
+        if n % ticks_per_check == 0:
+            if unsafe():
+                mc.emergency_stop(); return recorrido, "inseguro"
+            d = read_tof()
+            if d is None:
+                motivo = "sin_lectura"; break
+            if d < peligro_mm:
+                mc.emergency_stop(); return recorrido, "peligro"
+            if d < freno_mm:
+                motivo = "obstaculo"; break
+            vel = min(speed_mmps, 26.0) if d < comodo_mm else speed_mmps
+            mc.set_target(vel / MAX_WHEEL_MMPS, 0.0, ttl=period * 3)
+        l, r = mc.tick(dt)
+        sleep(dt)
+        now = clock()
+        recorrido += abs((l + r) / 2.0) * (now - last)
+        last = now
+        n += 1
+    mc.stop()
+    for _ in range(int(TICK_HZ)):                 # frenada suave (<= 1 s)
+        l, r = mc.tick(dt); sleep(dt)
+        now = clock(); recorrido += abs((l + r) / 2.0) * (now - last); last = now
+        if abs(l) < 1.0 and abs(r) < 1.0:
+            break
+    mc.emergency_stop()
+    return min(recorrido, total_mm * 1.2), motivo

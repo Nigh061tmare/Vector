@@ -16,6 +16,7 @@ robot.head_angle_rad.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
@@ -29,6 +30,9 @@ from vector_map import ObjectMemory, OccupancyGrid
 from vector_motion import MotionController, TICK_HZ
 
 TICK_S = 1.0 / TICK_HZ
+SAVE_EVERY_S = 60.0
+STATE_PATH = os.getenv("VECTOR_VIDA_STATE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "vida_estado.json"))
+STATE_VERSION = 1
 EYE_REFRESH_S = 0.5            # redibujar la cara (cada set_screen es un RPC)
 BAT_VALIDA_V = 2.5
 
@@ -95,6 +99,8 @@ class Vida:
         self.scene: Dict[str, Any] = {}        # {"name","side","near","novel"} (del visor/VL)
         self.threat = 0.0
         self._homed = False
+        self.busy_fn: Callable[[], bool] = lambda: False   # True si otro modulo usa cabeza/pantalla (p.ej. hablando)
+        self._t_save = clock()
 
     # -- un paso ----------------------------------------------------------------------
     def step(self, dt: float) -> Decision:
@@ -125,15 +131,70 @@ class Vida:
         if near is not None:
             interest = (10.0 + 15.0 * float(near), 0.8)     # mirar al objeto
         g = self.gaze.update(interest, arousal=min(1.0, self.behavior.miedo / 50.0 + 0.3))
-        if d.state != State.DORMIR:
+        ocupado = bool(self.busy_fn())
+        if d.state != State.DORMIR and not ocupado:
             apply_head(self.robot, g)
         self.eyes.set(d.eyes)
         ep = self.eyes.update()
         now = self._clock()
-        if self._draw_eyes and now - self._t_eyes >= EYE_REFRESH_S:
+        if self._draw_eyes and not ocupado and now - self._t_eyes >= EYE_REFRESH_S:
             self._t_eyes = now
             show_eyes(self.robot, ep, gaze_x=-float(sc.get("side", 0.0)), duration_s=EYE_REFRESH_S + 0.3)
+        if now - self._t_save >= SAVE_EVERY_S:
+            self._t_save = now
+            self.save()
         return d
+
+    # -- persistencia (mapa, objetos, animo) entre sesiones ----------------------------
+    def to_dict(self) -> Dict[str, Any]:
+        g = self.grid
+        cells = {f"{i},{j}": round(v, 2) for i, row in enumerate(g.l) for j, v in enumerate(row)
+                 if abs(v) >= 0.2}
+        now = self._clock()
+        return {
+            "version": STATE_VERSION, "grid_n": g.n, "cell_mm": g.cell, "cells": cells,
+            "home": list(g.home) if g.home else None,
+            "objects": [{"name": o.name, "x": o.x, "y": o.y, "age_s": now - o.last_seen,
+                         "n": o.n_obs, "moved": o.moved} for o in self.objects.objects],
+            "curiosidad": self.behavior.curiosidad, "miedo": self.behavior.miedo,
+        }
+
+    def load_dict(self, d: Dict[str, Any]) -> bool:
+        if d.get("version") != STATE_VERSION or d.get("grid_n") != self.grid.n \
+                or d.get("cell_mm") != self.grid.cell:
+            return False                       # formato/escala distintos: empezar limpio
+        for k, v in (d.get("cells") or {}).items():
+            i, j = (int(x) for x in k.split(","))
+            if 0 <= i < self.grid.n and 0 <= j < self.grid.n:
+                self.grid.l[i][j] = float(v)
+        if d.get("home"):
+            self.grid.set_home(*d["home"]); self._homed = True
+        now = self._clock()
+        for o in d.get("objects") or []:
+            t = self.objects.observe(str(o["name"]), float(o["x"]), float(o["y"]))
+            t.last_seen = now - float(o.get("age_s", 0.0)); t.n_obs = int(o.get("n", 1))
+            t.moved = bool(o.get("moved", False))
+        self.behavior.curiosidad = float(d.get("curiosidad", 50.0))
+        self.behavior.miedo = float(d.get("miedo", 0.0)) * 0.3     # el susto se atenua entre sesiones
+        return True
+
+    def save(self, path: str = "") -> bool:
+        path = path or STATE_PATH
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f)
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            return False
+
+    def load(self, path: str = "") -> bool:
+        try:
+            with open(path or STATE_PATH, encoding="utf-8") as f:
+                return self.load_dict(json.load(f))
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def stop(self) -> None:
         self.motion.emergency_stop()
@@ -171,13 +232,16 @@ def snapshot() -> Dict[str, Any]:
 
 
 def vivir(robot: Any, segundos: float = 6.0, scene: Optional[Dict[str, Any]] = None,
-          threat: float = 0.0) -> str:
+          threat: float = 0.0, busy_fn: Optional[Callable[[], bool]] = None) -> str:
     """Rebanada de vida para el nucleo. Devuelve el estado final (str) para `habito()`."""
     v = _VIDAS.get(id(robot))
     if v is None:
         v = _VIDAS[id(robot)] = Vida(robot, seed=int(os.getenv("VECTOR_SEED", "64")))
+        v.load()
     v.scene = scene or {}
     v.threat = threat
+    if busy_fn is not None:
+        v.busy_fn = busy_fn
     fin = time.monotonic() + segundos
     d: Optional[Decision] = None
     try:
@@ -186,6 +250,7 @@ def vivir(robot: Any, segundos: float = 6.0, scene: Optional[Dict[str, Any]] = N
             time.sleep(TICK_S)
     finally:
         v.stop()
+        v.save()
     return "vida_" + (d.state.value.lower() if d else "nada")
 
 
