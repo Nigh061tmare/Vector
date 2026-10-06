@@ -77,3 +77,17 @@ def test_turn_sign_towards_object(core):
     core.scene_inject(obj(True, side=0.8))
     m = core.motor_command(dict(SNAP))
     assert m["turn"] < 0 and m["reflex_side"] == "R"   # convencion del nucleo
+
+
+def test_motor_command_preserves_arc_ratio_when_saturating(core):
+    # fwd alto + escape asimetrico: antes el clip independiente deformaba la curva
+    snap = {"forward": 0.4, "backward": 0.0, "escape": 1.0, "escape_L": 0.2, "escape_R": 2.0}
+    m = core.motor_command(snap)
+    assert m["mode"] == "escape"
+    assert max(abs(m["left"]), abs(m["right"])) <= 1.0 + 1e-9
+    assert m["right"] > m["left"]
+    # relacion L/R igual a la de las ordenes sin recortar
+    lin, trn = m["linear"], m["turn"]
+    raw_l, raw_r = lin - trn * 0.8, lin + trn * 0.8
+    if abs(raw_r) > 1.0:
+        assert abs(m["left"] / m["right"] - raw_l / raw_r) < 1e-3

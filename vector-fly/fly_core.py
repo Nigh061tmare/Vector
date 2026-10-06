@@ -745,8 +745,11 @@ class FlyCore:
             mode = "idle"
             reflex_side = ""
 
-        left = float(np.clip(linear - steer * 0.8, -1.0, 1.0))
-        right = float(np.clip(linear + steer * 0.8, -1.0, 1.0))
+        left = linear - steer * 0.8
+        right = linear + steer * 0.8
+        # Normalizar por el pico (no recortar cada rueda): conserva el radio del arco.
+        _peak = max(abs(left), abs(right), 1.0)
+        left, right = float(left / _peak), float(right / _peak)
         out = {
             "left": round(left, 4),
             "right": round(right, 4),

@@ -30,6 +30,7 @@ import json
 import logging
 import math
 import os
+import concurrent.futures
 import queue
 import random
 import re
@@ -40,6 +41,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
+
+from vector_vad import EnergyVAD
 import requests
 import subprocess
 import urllib.error
@@ -2941,7 +2944,7 @@ class Escucha:
         # Discord 2.0 gestiona la conexión desde vector_discord.py (iniciar_discord_2)
         log.info("Escucha PC: Discord manejado por bot 2.0 externo")
         if TIENE_VOSK and self.vosk_model_path.exists():
-            threading.Thread(target=self._loop_dual_stt, daemon=True, name="EscuchaDual").start()
+            threading.Thread(target=self._loop_dual_supervisado, daemon=True, name="EscuchaDual").start()
             return
         if TIENE_SR and USAR_ESCUCHA_PC:
             threading.Thread(target=self._loop_sr, daemon=True, name="EscuchaSR").start()
@@ -2950,18 +2953,36 @@ class Escucha:
         print("Escucha micrófono inactiva.")
 
 
+    def _loop_dual_supervisado(self) -> None:
+        """Relanza la escucha si el hilo muere (mic desenchufado, error de Vosk...)."""
+        while not self.stop.is_set():
+            self._loop_dual_stt()
+            if not self.stop.is_set():
+                log.warning("Escucha dual terminada; reintento en 5 s")
+                time.sleep(5.0)
+
     def _loop_dual_stt(self) -> None:
         try:
             model = vosk.Model(str(self.vosk_model_path)) if (TIENE_VOSK and self.vosk_model_path.exists()) else None
             recg = sr.Recognizer() if TIENE_SR else None
-            q_audio: "queue.Queue" = queue.Queue()
+            q_audio: "queue.Queue" = queue.Queue(maxsize=60)   # ~7 s: si el STT va lento, se descarta lo viejo
+            vad = EnergyVAD()
+            oyo_voz = False
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
 
             dev_idx = buscar_dispositivo_microfono(AUDIO_INPUT_DEVICE)
             dev_nombre = "Predeterminado" if dev_idx is None else str(sd.query_devices(dev_idx).get("name", dev_idx))
             print(f"Oído inteligente Dual (Google STT + Vosk [es-ES]) ON usando microfono: [{dev_nombre}]")
 
             def _audio_cb(indata, frames, time_info, status):
-                q_audio.put(bytes(indata))
+                try:
+                    q_audio.put_nowait(bytes(indata))
+                except queue.Full:
+                    try:
+                        q_audio.get_nowait()          # descartar el mas viejo
+                        q_audio.put_nowait(bytes(indata))
+                    except Exception:
+                        pass
 
             with sd.RawInputStream(
                 samplerate=16000, blocksize=2000, dtype="int16", channels=1,
@@ -2974,7 +2995,22 @@ class Escucha:
                 buffer_frase = bytearray()
 
                 while not self.stop.is_set():
-                    data = q_audio.get()
+                    try:
+                        data = q_audio.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    # No escucharse a si mismo: mientras Vector habla (y 0.8 s despues)
+                    # se descarta el audio y se reinicia el reconocedor.
+                    if _speak_lock.locked() or time.time() - _last_speak < 0.8:
+                        buffer_frase.clear(); vad.reset(); oyo_voz = False
+                        if rec:
+                            try:
+                                rec.Reset()
+                            except Exception:
+                                pass
+                        continue
+                    vad.feed(data)
+                    oyo_voz = oyo_voz or vad.speaking
                     buffer_frase.extend(data)
 
                     # Limitar buffer para evitar acumulación
@@ -2987,10 +3023,13 @@ class Escucha:
 
                         texto_final = ""
                         # 1. Intentar Google STT de alta precision con el audio capturado
-                        if recg and len(buffer_frase) >= 16000 * 2 * 0.4:
+                        if recg and oyo_voz and len(buffer_frase) >= 16000 * 2 * 0.4:
                             try:
                                 audio_chunk = sr.AudioData(bytes(buffer_frase), 16000, 2)
-                                txt_google = recg.recognize_google(audio_chunk, language="es-ES").strip().lower()
+                                # En hilo aparte y con tope: antes una red lenta bloqueaba
+                                # el bucle de audio y la cola crecia sin limite.
+                                fut = pool.submit(recg.recognize_google, audio_chunk, language="es-ES")
+                                txt_google = fut.result(timeout=6.0).strip().lower()
                                 if txt_google and len(txt_google) >= 2:
                                     texto_final = txt_google
                             except Exception:
@@ -3000,7 +3039,7 @@ class Escucha:
                         if not texto_final:
                             texto_final = txt_vosk
 
-                        buffer_frase.clear()
+                        buffer_frase.clear(); oyo_voz = False
 
                         if not texto_final or len(texto_final) < 3:
                             continue
@@ -4501,7 +4540,7 @@ def main() -> None:
                                 elif cmd_w == "matrix":
                                     animacion_matrix_oled(robot)
                                 elif cmd_w == "cargador":
-                                    go_dock(robot, c, m)
+                                    on_charger(robot, c)
                             except Exception as _err_acc:
                                 print("Aviso accion web:", _err_acc)
                         elif tipo_w == "web_decir":

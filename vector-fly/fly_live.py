@@ -210,30 +210,65 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float = 60.0):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def _parse_scene(text: str):
-    objs = []
-    m = re.search(r"\{.*\}", text or "", re.S)
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def _num(v, default: float) -> float:
+    try:
+        f = float(v)
+        return f if f == f and abs(f) != float("inf") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_scene(text: str, max_objects: int = 4):
+    """Extrae objetos {name, side, near} de la salida de la VL.
+
+    Robusto a lo que hacen los modelos pequenos: vallas ```json, texto antes/despues,
+    JSON TRUNCADO por max_tokens (se recuperan los objetos completos que quepan),
+    numeros como cadenas y duplicados.  Antes un JSON cortado caia a una regex que
+    solia devolver un unico objeto.
+    """
+    text = re.sub(r"(?<=[:\s\[,])(-?)\.(\d)", r"\g<1>0.\2", text or "")  # '.5' -> '0.5'
+    objs: list = []
+    seen: set = set()
+
+    def add(name, side, near) -> None:
+        name = str(name or "").strip()[:32]
+        key = name.lower()
+        if len(name) < 2 or key in seen:
+            return
+        seen.add(key)
+        objs.append({"name": name,
+                     "side": _clamp(_num(side, 0.0), -1.0, 1.0),
+                     "near": _clamp(_num(near, 0.3), 0.0, 1.0)})
+
+    # 1) JSON completo
+    m = re.search(r"\{.*\}", text, re.S)
     if m:
         try:
             j = json.loads(m.group(0))
-            for o in (j.get("objects") or []):
-                if isinstance(o, dict) and o.get("name"):
-                    objs.append({"name": str(o["name"])[:32],
-                                 "side": max(-1.0, min(1.0, float(o.get("side", 0.0)))),
-                                 "near": max(0.0, min(1.0, float(o.get("near", 0.3))))})
-        except Exception:
+            for o in (j.get("objects") or []) if isinstance(j, dict) else []:
+                if isinstance(o, dict):
+                    add(o.get("name"), o.get("side", 0.0), o.get("near", 0.3))
+        except (ValueError, AttributeError):
             pass
+    # 2) objetos planos {...} sueltos (JSON truncado o con basura alrededor)
+    if not objs:
+        for mm in re.finditer(r"\{[^{}]*\}", text):
+            try:
+                o = json.loads(mm.group(0))
+            except ValueError:
+                continue
+            if isinstance(o, dict) and o.get("name"):
+                add(o.get("name"), o.get("side", 0.0), o.get("near", 0.3))
+    # 3) ultimo recurso: pares name/side/near en texto libre
     if not objs:
         for mm in re.finditer(
-                r'name"?\s*[:=]\s*"?([\w \-]{2,32})"?[^\d\-]*(-?\d*\.?\d+)[^\d\-]+(\d*\.?\d+)',
-                text or ""):
-            try:
-                objs.append({"name": mm.group(1).strip()[:32],
-                             "side": max(-1.0, min(1.0, float(mm.group(2)))),
-                             "near": max(0.0, min(1.0, float(mm.group(3))))})
-            except Exception:
-                continue
-    return objs[:4]
+                r'name"?\s*[:=]\s*"?([\w \-]{2,32})"?[^\d\-]*(-?\d*\.?\d+)[^\d\-]+(\d*\.?\d+)', text):
+            add(mm.group(1), mm.group(2), mm.group(3))
+    return objs[:max_objects]
 
 
 def _describe(jpg: bytes):
@@ -243,7 +278,7 @@ def _describe(jpg: bytes):
     if prov in ("auto", "llamacpp", "llama"):
         try:
             j = _post_json(f"{LLAMACPP_BASE}/chat/completions",
-                           {"model": LLAMACPP_MODEL, "temperature": 0, "max_tokens": 300,
+                           {"model": LLAMACPP_MODEL, "temperature": 0, "max_tokens": 400,
                             "messages": [{"role": "user", "content": [
                                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                                 {"type": "text", "text": _VISION_PROMPT}
