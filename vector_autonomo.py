@@ -1706,19 +1706,31 @@ def dacc(a: Any, b: Any) -> float:
 
 def bat_low(robot: Any) -> bool:
     try:
-        e = robot.get_battery_state()
-        return bool(e and e.battery_volts <= V_BAT_BAJA)
+        v = bat_volts(robot)
+        return bool(v >= _BAT_VALIDA_V and v <= V_BAT_BAJA)
     except Exception:
         return False
 
 
+_BAT_VALIDA_V = 2.5          # por debajo de esto la lectura es un fallo, no una bateria
+_bat_cache: Dict[str, float] = {"v": 0.0, "t": 0.0}
+
+
 def bat_volts(robot: Any) -> float:
+    """Voltaje real; ante fallo/0 V devuelve la ultima lectura buena (<=120 s).
+
+    Devuelve 0.0 solo si nunca hubo una lectura valida o esta caducada.
+    """
     try:
         e = robot.get_battery_state()
-        if e and e.battery_volts:
-            return float(e.battery_volts)
+        v = float(getattr(e, "battery_volts", 0.0) or 0.0) if e else 0.0
+        if v >= _BAT_VALIDA_V:
+            _bat_cache["v"], _bat_cache["t"] = v, time.time()
+            return v
     except Exception:
         pass
+    if time.time() - _bat_cache["t"] <= 120.0:
+        return _bat_cache["v"]
     return 0.0
 
 
@@ -1776,6 +1788,29 @@ def avanzar_seguro(
             return False
         recor += tr
     return True
+
+
+def rodar_suave(robot: Any, lin: float, trn: float, dur: float) -> Tuple[float, float]:
+    """Mueve las ruedas con rampa de arranque/frenada (ver vector_motion).
+
+    Bloqueante ~dur + tiempo de frenada. Devuelve la (L, R) objetivo en mm/s.
+    """
+    from vector_motion import MotionController, TICK_HZ, diff_drive
+    mc = MotionController(robot, guard=lambda: not (es_borde(robot) or es_up(robot)))
+    mc.set_target(lin, trn, ttl=dur)
+    dt = 1.0 / TICK_HZ
+    fin = time.monotonic() + dur
+    try:
+        while time.monotonic() < fin:
+            mc.tick(dt); time.sleep(dt)
+        mc.stop()
+        for _ in range(int(TICK_HZ)):  # <=1 s de frenada suave
+            l, r = mc.tick(dt); time.sleep(dt)
+            if abs(l) < 1.0 and abs(r) < 1.0:
+                break
+    finally:
+        mc.emergency_stop()
+    return diff_drive(lin, trn)
 
 
 def escanear(robot: Any, mapa: Mapa) -> None:
@@ -4270,11 +4305,7 @@ def main() -> None:
                                     last["fly_wander"] = now
                                     lin = float(fc.get("linear", 0.0))
                                     trn = float(fc.get("turn", 0.0))
-                                    wl = max(-120.0, min(120.0, (lin - trn * 0.8) * 90.0))
-                                    wr = max(-120.0, min(120.0, (lin + trn * 0.8) * 90.0))
-                                    robot.motors.set_wheel_motors(wl, wr)
-                                    time.sleep(0.6)
-                                    robot.motors.set_wheel_motors(0.0, 0.0)
+                                    wl, wr = rodar_suave(robot, lin * 0.75, trn, 0.9)
                                     log.info("FlyBrain explorar L=%.0f R=%.0f (%s)", wl, wr, fc.get("mode"))
                                     if random.random() < 0.15:
                                         try:
@@ -4301,7 +4332,11 @@ def main() -> None:
                             volts = float(getattr(bs, "battery_volts", 0.0))
                             lvl = str(getattr(bs, "battery_level", ""))
                             on_ch = bool(getattr(bs, "is_on_charger_platform", False)) or bool(robot.status.is_on_charger)
-                            if not on_ch and (volts < 3.55 or "LOW" in lvl):
+                            if volts < _BAT_VALIDA_V:
+                                volts = bat_volts(robot)
+                            if volts < _BAT_VALIDA_V:
+                                pass  # lectura fallida: no tomar decisiones con 0 V
+                            elif not on_ch and (volts < 3.55 or "LOW" in lvl):
                                 log.info("Bateria baja (%.2fV); voy a la base a cargar", volts)
                                 hilo(lambda: robot.behavior.drive_on_charger())
                                 try:
