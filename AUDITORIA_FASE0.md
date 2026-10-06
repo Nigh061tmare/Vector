@@ -33,3 +33,16 @@ FSM de comportamiento, mapa de ocupación, chirps ampliados, supervisor, UI. Los
 7 copias de seguridad `.py/.bak` (≈800 KB) y `vector_autonomo_out.log` (857 KB) versionados; `vector_autonomo.py` 5180 líneas
 con `except Exception: pass` generalizado; ruta `C:\Users\Jose Luis\vector-fly` hardcodeada en `vector_fly.py`;
 `test*.py` sueltos son scripts manuales, no tests.
+
+## Actualización: con `vector-fly/` (RAR subido)
+- **Visor `fly_live.py` (arreglado, con tests):** `_camera_loop` salía para siempre si el núcleo no respondía 3 veces
+  y no había webcam (`_CAM["on"]=False`), dejando al cerebro ciego; `_scene_loop` moría con cualquier excepción;
+  el bind del puerto 4712 abortaba el proceso si estaba ocupado. Ahora: reintento infinito de la cámara de Vector,
+  webcam solo opt-in (`FLY_WEBCAM=1`), hilos bajo `_supervised()`, bind con reintento y
+  `SERVICIOS_SUPERVISADOS.bat` que relanza `fly_server`/`fly_live` si mueren (**el .bat no está probado en Windows**).
+  No pude reproducir el "Camera index out of range" exacto (depende del OpenCV de tu PC); los tests cubren la ausencia de webcam.
+- **TTL de escena / parpadeo (verificado con tests, sin connectome):** `watch` es continuo mientras la VL redetecte cada
+  < 7 s (habituación). Con `SCENE_EVERY=2.5` + inferencia, si un ciclo tarda > 7 s el modo cae a `wander` (probado y documentado).
+  Falta medir el periodo real de tu Qwen2.5-VL-3B; si supera ~5 s conviene subir la habituación o el TTL.
+- `flybrain` (paquete + datos MaleCNS) no existe aquí: no se puede ejecutar la simulación neuronal; solo la capa de decisión.
+- `.anki_vector/sdk_config.ini` del RAR contiene el GUID: **no se subió** (añadido a `.gitignore`).

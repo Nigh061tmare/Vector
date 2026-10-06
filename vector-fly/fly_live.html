@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlyBrain · Neuronas en vivo</title>
+<style>
+  :root { --bg:#06090f; --panel:#0d1420; --line:#1d2b40; --fg:#c9e6ff;
+          --ok:#00ff9c; --warn:#ffd166; --bad:#ff4d6d; --blue:#3ea6ff; --purple:#b388ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:radial-gradient(circle at 50% 0%,#0b1522,#04070c 70%);
+         color:var(--fg); font-family:"Segoe UI",system-ui,sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 20px;
+           border-bottom:1px solid var(--line); background:#08101bcc; position:sticky; top:0; z-index:5; }
+  h1 { font-size:1.05rem; margin:0; letter-spacing:1px; }
+  h1 span { color:var(--ok); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--bad); box-shadow:0 0 10px var(--bad); }
+  .dot.on { background:var(--ok); box-shadow:0 0 10px var(--ok); }
+  .meta { margin-left:auto; font-size:.78rem; color:#7fa6c9; display:flex; gap:16px; }
+  .wrap { display:grid; grid-template-columns: 1fr 1fr; gap:14px; padding:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .card h2 { margin:0 0 8px; font-size:.72rem; letter-spacing:2px; color:#7fa6c9; font-weight:600; }
+  .full { grid-column:1 / -1; }
+  #mode { font-size:1.6rem; font-weight:800; letter-spacing:3px; text-align:center; padding:8px;
+          border-radius:10px; transition:.15s; }
+  .m-idle { color:#6d8ba8; background:#0e1725; }
+  .m-chase { color:var(--warn); background:#1c1a0e; }
+  .m-escape { color:#fff; background:#5c1020; box-shadow:0 0 28px #ff4d6d88; animation:pulse .35s infinite alternate; }
+  @keyframes pulse { from{box-shadow:0 0 12px #ff4d6d66;} to{box-shadow:0 0 34px #ff4d6dcc;} }
+  canvas { width:100%; display:block; border-radius:8px; background:#05080d; }
+  .bars { display:flex; flex-direction:column; gap:7px; }
+  .bar { display:grid; grid-template-columns:96px 1fr 54px; align-items:center; gap:8px; font-size:.76rem; }
+  .track { height:12px; background:#0a1119; border-radius:6px; overflow:hidden; border:1px solid #16233a; }
+  .fill { height:100%; width:0%; border-radius:6px; transition:width .08s linear; }
+  .val { text-align:right; font-variant-numeric:tabular-nums; color:#9fc6e8; }
+  .wheels { display:flex; justify-content:center; gap:40px; align-items:flex-end; height:170px; }
+  .wheel { display:flex; flex-direction:column; align-items:center; gap:6px; font-size:.7rem; color:#7fa6c9; }
+  .wcol { width:44px; height:130px; background:#0a1119; border:1px solid #16233a; border-radius:8px;
+          position:relative; overflow:hidden; }
+  .wfill { position:absolute; bottom:0; left:0; right:0; height:0%; background:linear-gradient(#00ff9c,#00a86b); }
+  .wfill.neg { background:linear-gradient(#3ea6ff,#1e5fa8); }
+  .ctrl { display:flex; flex-wrap:wrap; gap:10px; }
+  button { background:#10203a; color:var(--fg); border:1px solid #23405f; padding:10px 16px;
+           border-radius:9px; cursor:pointer; font-size:.82rem; font-weight:600; }
+  button:hover { background:#16304f; border-color:var(--blue); }
+  button.hot { background:#3a1020; border-color:#7a1f38; color:#ffd9e0; }
+  button.on { background:#0f3024; border-color:var(--ok); color:var(--ok); }
+  .dn { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; text-align:center; }
+  .dn div { background:#0a1119; border:1px solid #16233a; border-radius:8px; padding:8px; }
+  .dn .n { font-size:.66rem; color:#7fa6c9; }
+  .dn .v { font-size:1.15rem; font-weight:700; font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="dot"></div>
+  <h1>FLYBRAIN · <span>MaleCNS v1.0</span> · 166.700 neuronas</h1>
+  <div class="meta">
+    <span>fps <b id="fps">0</b></span>
+    <span>disparos <b id="fire">0</b></span>
+    <span>t <b id="t">0</b>s</span>
+  </div>
+  <nav style="display:flex;gap:6px;margin-left:16px">
+    <a href="/" style="color:#5db4ff;text-decoration:none;font-size:11px;letter-spacing:1px;padding:5px 10px;border:1px solid #5db4ff;border-radius:6px">AUTO</a>
+    <a href="/brain.html" style="color:#6b7a94;text-decoration:none;font-size:11px;letter-spacing:1px;padding:5px 10px;border:1px solid #222b3d;border-radius:6px">BRAIN</a>
+    <a href="/neurons.html" style="color:#6b7a94;text-decoration:none;font-size:11px;letter-spacing:1px;padding:5px 10px;border:1px solid #222b3d;border-radius:6px">NEURONS</a>
+    <a href="http://127.0.0.1:8000/" target="_blank" style="color:#6b7a94;text-decoration:none;font-size:11px;letter-spacing:1px;padding:5px 10px;border:1px solid #222b3d;border-radius:6px">VECTOR</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div class="card full"><div id="mode" class="m-idle">IDLE</div></div>
+
+  <div class="card full">
+    <h2>ACTIVIDAD NEURONAL EN VIVO (densidad de disparo por region del cerebro)</h2>
+    <canvas id="band" width="1200" height="230"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>POBLACIONES VISUALES Y MOTORAS</h2>
+    <div class="bars" id="bars"></div>
+  </div>
+
+  <div class="card">
+    <h2>NEURONAS DESCENDENTES (salida hacia el cuerpo)</h2>
+    <div class="dn" id="dn"></div>
+    <h2 style="margin-top:14px">RUEDAS (orden decodificada)</h2>
+    <div class="wheels">
+      <div class="wheel"><div class="wcol"><div class="wfill" id="wL"></div></div>IZQ <b id="wLv">0.00</b></div>
+      <div class="wheel"><div class="wcol"><div class="wfill" id="wR"></div></div>DER <b id="wRv">0.00</b></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>DECISIÓN DE NAVEGACIÓN (readout entrenado)</h2>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+      <div style="flex:1;height:18px;background:#0a1420;border-radius:9px;position:relative;overflow:hidden">
+        <div style="position:absolute;left:50%;top:0;bottom:0;width:2px;background:#33506b"></div>
+        <div id="decBar" style="position:absolute;top:0;bottom:0;left:50%;width:0;background:#3ddc84;border-radius:9px"></div>
+      </div>
+      <b id="decVal" style="min-width:60px;text-align:right;color:#3ddc84">--</b>
+    </div>
+    <div style="font-size:.72rem;color:#7fa6c9;margin-top:6px">
+      giro &lt; 0 = izquierda · &gt; 0 = derecha (verde suave, rojo giro fuerte)
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>ESTADO DEL REFLEJO</h2>
+    <div class="dn" style="grid-template-columns:repeat(4,1fr);margin-top:6px">
+      <div><div class="n">modo</div><div class="v" id="stMode">--</div></div>
+      <div><div class="n">escape</div><div class="v" id="stEsc">--</div></div>
+      <div><div class="n">loom</div><div class="v" id="stLoom">--</div></div>
+      <div><div class="n">lado</div><div class="v" id="stSide">--</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>LO QUE DICE VECTOR (en vivo)</h2>
+    <div id="speech" style="max-height:240px;overflow-y:auto;font-size:.84rem;line-height:1.55">
+      <i style="color:#5b7794">esperando frases…</i>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>ESTADO DE VECTOR</h2>
+    <div id="vstatus" style="font-size:.82rem;color:#9fc6e8;line-height:1.5">--</div>
+    <img id="vcam" alt="camara Vector" style="width:100%;margin-top:10px;border-radius:8px;background:#05080d;min-height:90px">
+  </div>
+
+  <div class="card">
+    <h2>LO QUE VE LA MOSCA (retina → 6.006 fotorreceptores)</h2>
+    <canvas id="eye" width="320" height="70" style="width:100%;border-radius:8px;background:#05080d"></canvas>
+    <div class="ctrl" style="margin-top:10px">
+      <button id="btnCam" onclick="toggleCam()">Usar webcam del PC</button>
+      <span id="camMsg" style="align-self:center;font-size:.75rem;color:#7fa6c9"></span>
+    </div>
+  </div>
+
+  <div class="card full">
+    <h2>ESTÍMULO / CONTROL</h2>
+    <div class="ctrl">
+      <button onclick="stim(-30,900)">Amenaza lejos (izq)</button>
+      <button onclick="stim(-30,220)">Amenaza cerca (izq)</button>
+      <button class="hot" onclick="stim(-30,90)">¡LOOMING!</button>
+      <button onclick="stim(30,220)">Amenaza derecha</button>
+      <button id="btnDemo" onclick="toggleDemo()">Demo automática</button>
+      <button onclick="send('/reset',{})">Reset cerebro</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const ROWS = 150, BINS = 128;
+let rows = [], maxSeen = 1, maxes = {}, hist = [];
+const band = document.getElementById('band'), bctx = band.getContext('2d');
+
+const POP = [
+  ['LPLC2','#ff4d6d'], ['LC4','#ff8c42'], ['LPLC1','#ffd166'], ['LC10a','#3ea6ff'],
+  ['escape','#ff2e63'], ['forward','#00ff9c'], ['backward','#b388ff'], ['steer','#4dd0e1'],
+  ['punch','#ffb3c0'], ['kick','#ffe9a8']
+];
+const LEARN = [['LRN_loom','#c792ea'],['LRN_side','#82aaff']];
+const DN = [['DN_DNp01','DNp01'],['DN_DNp02','DNp02'],['DN_DNg01','DNg01'],['DN_DNa','DNa']];
+
+const barsEl = document.getElementById('bars');
+POP.forEach(([k,c]) => {
+  const d = document.createElement('div'); d.className='bar';
+  d.innerHTML = `<span>${k}</span><div class="track"><div class="fill" style="background:${c}"></div></div><span class="val" id="v_${k}">0</span>`;
+  barsEl.appendChild(d);
+});
+LEARN.forEach(([k,c]) => {
+  const d = document.createElement('div'); d.className='bar';
+  d.innerHTML = `<span>🧠 ${k}</span><div class="track"><div class="fill" style="background:${c}"></div></div><span class="val" id="v_${k}">0</span>`;
+  barsEl.appendChild(d);
+});
+const dnEl = document.getElementById('dn');
+DN.forEach(([k,l]) => {
+  const d = document.createElement('div');
+  d.innerHTML = `<div class="n">${l}</div><div class="v" id="v_${k}">0</div>`;
+  dnEl.appendChild(d);
+});
+
+function norm(v, key){
+  maxes[key] = Math.max((maxes[key]||0.0001)*0.999, v, 0.0001);
+  return Math.min(1, v / maxes[key]);
+}
+function col(x){
+  x = Math.max(0, Math.min(1, x));
+  if (x < 0.25) return `rgb(0,${Math.round(60+x*500)},${Math.round(120+x*400)})`;
+  if (x < 0.5)  return `rgb(${Math.round((x-0.25)*700)},255,120)`;
+  if (x < 0.75) return `rgb(255,${Math.round(255-(x-0.5)*500)},40)`;
+  return `rgb(255,${Math.round(110-(x-0.75)*440)},${Math.round(80-(x-0.75)*300)})`;
+}
+function drawBand(){
+  const w = band.width, h = band.height, rh = h / ROWS, bw = w / BINS;
+  bctx.fillStyle = '#05080d'; bctx.fillRect(0,0,w,h);
+  for (let r=0; r<rows.length; r++){
+    const row = rows[r], y = h - (rows.length - r) * rh;
+    for (let i=0; i<BINS; i++){
+      const v = row[i]; if (!v) continue;
+      bctx.fillStyle = col(norm(v, 'g')); 
+      bctx.fillRect(i*bw, y, bw+0.6, rh+0.6);
+    }
+  }
+  bctx.strokeStyle = '#16233a'; bctx.strokeRect(0.5,0.5,w-1,h-1);
+}
+
+let mode='idle';
+function apply(d){
+  const on = d.connected;
+  document.getElementById('dot').className = 'dot' + (on?' on':'');
+  document.getElementById('fps').textContent = (d.fps||0).toFixed(0);
+  const s = d.snapshot||{}, m = d.motor||{};
+  document.getElementById('fire').textContent = s.fire_count||0;
+  document.getElementById('t').textContent = (s.t||0).toFixed(1);
+
+  const el = document.getElementById('mode');
+  mode = m.mode || (m.escape ? 'escape' : 'idle');
+  el.textContent = (m.escape ? '⚡ ESCAPE' : mode.toUpperCase()) + (m.reflex_side? '  ['+m.reflex_side+']':'');
+  el.className = m.escape ? 'm-escape' : (mode==='chase' ? 'm-chase' : 'm-idle');
+
+  POP.forEach(([k]) => {
+    const v = s[k]||0;
+    const f = document.querySelector(`#v_${k}`).parentElement.querySelector('.fill');
+    f.style.width = (norm(v,k)*100).toFixed(1)+'%';
+    document.getElementById('v_'+k).textContent = Number(v).toFixed(3);
+  });
+  DN.forEach(([k]) => {
+    const v = s[k]||0;
+    document.getElementById('v_'+k).textContent = Number(v).toFixed(2);
+    document.getElementById('v_'+k).style.color = v>0.2 ? '#ff8c42' : '#c9e6ff';
+  });
+  LEARN.forEach(([k]) => {
+    const v = s[k]||0;
+    const f = document.querySelector(`#v_${k}`).parentElement.querySelector('.fill');
+    f.style.width = (v*100).toFixed(1)+'%';
+    document.getElementById('v_'+k).textContent = Number(v).toFixed(2);
+  });
+  const L = m.left||0, R = m.right||0;
+  const wl = document.getElementById('wL'), wr = document.getElementById('wR');
+  wl.style.height = Math.min(100, Math.abs(L)*100)+'%';
+  wr.style.height = Math.min(100, Math.abs(R)*100)+'%';
+  wl.className = 'wfill' + (L<0?' neg':'');
+  wr.className = 'wfill' + (R<0?' neg':'');
+  document.getElementById('wLv').textContent = L.toFixed(2);
+  document.getElementById('wRv').textContent = R.toFixed(2);
+
+  const dec = (s.DEC_steer !== undefined) ? s.DEC_steer
+            : (m.decision !== undefined ? m.decision : null);
+  const dv = document.getElementById('decVal'), db = document.getElementById('decBar');
+  if (dec === null || dec === undefined){
+    dv.textContent = '--'; db.style.width = '0';
+  } else {
+    dv.textContent = (dec >= 0 ? '+' : '') + Number(dec).toFixed(2);
+    const w = Math.min(50, Math.abs(dec) * 50);
+    db.style.width = w + '%';
+    db.style.left = dec >= 0 ? '50%' : (50 - w) + '%';
+    db.style.background = Math.abs(dec) > 0.6 ? '#ff6b6b' : '#3ddc84';
+  }
+
+  const stMode = document.getElementById('stMode');
+  if (stMode){
+    stMode.textContent = (mode || 'idle').toUpperCase();
+    stMode.style.color = m.escape ? '#ff4d6d' : (mode === 'chase' ? '#ffd166' : '#c9e6ff');
+    const eEl = document.getElementById('stEsc');
+    eEl.textContent = m.escape ? 'SÍ' : 'no';
+    eEl.style.color = m.escape ? '#ff4d6d' : '#c9e6ff';
+    document.getElementById('stLoom').textContent = Number(s.LRN_loom || 0).toFixed(2);
+    const sd = m.reflex_side;
+    document.getElementById('stSide').textContent = (sd === undefined || sd === null || sd === '') ? '—' : sd;
+  }
+
+  if (d.hist && d.hist.length){
+    rows.push(d.hist);
+    if (rows.length > ROWS) rows.shift();
+    drawBand();
+  }
+  if (d.eye && d.eye.length){
+    drawEye(d.eye);
+    msg.textContent = 'retina activa · ' + d.eye.length + ' fotorreceptores';
+  }
+  if (d.cam_err) msg.textContent = 'ℹ ' + d.cam_err;
+}
+
+const msg = document.getElementById('camMsg');
+const eyeCv = document.getElementById('eye'), eyeCtx = eyeCv.getContext('2d');
+function drawEye(eye){
+  const w = eyeCv.width, h = eyeCv.height;
+  eyeCtx.fillStyle = '#05080d'; eyeCtx.fillRect(0,0,w,h);
+  const bw = w / eye.length;
+  for (let i=0;i<eye.length;i++){
+    const v = Math.max(0, Math.min(1, eye[i]));
+    const r = Math.floor(30 + v*225), g = Math.floor(60 + v*195), b = Math.floor(90 + v*165);
+    eyeCtx.fillStyle = `rgb(${r},${g},${b})`;
+    eyeCtx.fillRect(i*bw, 0, bw+0.5, h);
+  }
+}
+
+const moodCol = m => ({'curioso':'#3ea6ff','feliz':'#3ddc84','triste':'#8fa8c0','asustado':'#ff6b6b','cansado':'#ffd166'}[m] || '#c9e6ff');
+async function tickSpeech(){
+  try {
+    const j = await (await fetch('/speech')).json();
+    const el = document.getElementById('speech');
+    if (el){
+      const items = (j.speech || []).slice(-14).reverse();
+      const pn = (j.pens || []).slice(-4).reverse();
+      el.innerHTML = (items.length
+        ? items.map(s => `<div><b style="color:${moodCol(s.mood)}">[${s.mood||'?'}]</b> ${s.text||''}</div>`).join('')
+        : '<i style="color:#5b7794">aun sin frases…</i>') +
+        (pn.length ? '<div style="margin-top:8px;border-top:1px solid #16233a;padding-top:6px;color:#6b8aa8;font-style:italic">🧠 ' +
+          pn.map(t => String(t).replace(/</g, '&lt;')).join('<br>🧠 ') + '</div>' : '');
+    }
+    const st = document.getElementById('vstatus');
+    if (st){
+      const s = j.status || {};
+      st.innerHTML = `animo <b style="color:${moodCol(s.animo)}">${s.animo||'--'}</b> · modo <b>${s.modo||'--'}</b>` +
+        (s.voltios ? ` · bateria <b>${s.voltios}V</b>` : '') +
+        (s.proveedor ? ` · IA <b style="color:#3ddc84">${s.proveedor}</b>` : '') +
+        `<br><span style="color:#6b8aa8">E=${s.E||'--'} C=${s.C||'--'} A=${s.A||'--'} B=${s.B||'--'} S=${s.S||'--'} M=${s.M||'--'}</span>`;
+    }
+    const cam = document.getElementById('vcam');
+    if (cam && !cam.src) cam.src = 'http://127.0.0.1:8000/api/snapshot?t=' + Date.now();
+  } catch(e){}
+}
+function tickCam(){
+  const cam = document.getElementById('vcam');
+  if (!cam) return;
+  const img = new Image();
+  img.onload = () => { cam.src = img.src; };
+  img.src = 'http://127.0.0.1:8000/api/snapshot?t=' + Date.now();
+}
+setInterval(tickSpeech, 2000);
+tickSpeech();
+setInterval(tickCam, 400);
+tickCam();
+
+const es = new EventSource('/stream');
+es.onmessage = e => { try { apply(JSON.parse(e.data)); } catch(_){} };
+es.onerror = () => document.getElementById('dot').className='dot';
+
+function stim(bearing, dist){
+  fetch('/stim',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bearing,dist})});
+}
+function send(path, body){
+  fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+let demo=false;
+function toggleDemo(){
+  demo = !demo;
+  send('/demo',{on:demo});
+  const b = document.getElementById('btnDemo');
+  b.className = demo ? 'on' : '';
+  b.textContent = demo ? 'Demo ACTIVA (pulsa para parar)' : 'Demo automática';
+}
+
+let camOn=false, camTimer=null;
+function toggleCam(){
+  camOn = !camOn;
+  send('/camera',{on:camOn});
+  const b = document.getElementById('btnCam');
+  b.className = camOn ? 'on' : '';
+  b.textContent = camOn ? 'Cámara ACTIVA (pulsa para parar)' : 'Activar cámara';
+  const img = document.getElementById('cam');
+  if (camOn){
+    camTimer = setInterval(()=>{ img.src='/camera.jpg?t='+Date.now(); }, 120);
+  } else if (camTimer){ clearInterval(camTimer); camTimer=null; img.src=''; }
+}
+</script>
+</body>
+</html>

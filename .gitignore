@@ -1,0 +1,40 @@
+# ---- SEGURIDAD: nunca subir ----
+.env
+*.cert
+*.pem
+*.key
+remote_botSdkInfo.json
+__pycache__/
+*.pyc
+
+# ---- Entornos y modelos (GB, se regeneran) ----
+venv/
+flybrain-venv/
+models/
+fly-data/
+node_modules/
+
+# ---- Logs y artefactos generados ----
+*.log
+*.out.log
+*.err.log
+*.gif
+*.mp4
+frame_*.png
+*_seen.json
+kiruwa_posts.log
+
+# ---- Backups ----
+*.bak
+*.bak_*
+
+# ---- Python ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# credenciales locales del SDK (GUID)
+.anki_vector/
