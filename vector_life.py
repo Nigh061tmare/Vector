@@ -264,7 +264,7 @@ def simulate(seconds: float = 120.0, seed: int = 3, verbose: bool = True) -> Dic
         estados[d.state.value] = estados.get(d.state.value, 0) + 1
     out = {"collisions": rb.collisions, "estados": estados,
            "celdas_vistas": sum(1 for row in vida.grid.l for v in row if abs(v) > 0.3),
-           "atascos": sum(1 for e in vida.behavior.timeline(200) if "atascado" in e["razon"])}
+           "atascos": sum(1 for e in vida.behavior.timeline(200) if "atascado" in str(e["razon"]))}
     if verbose:
         print(vida.grid.to_ascii((rb.x, rb.y, math.degrees(rb.th)), half=14))
         print(out)

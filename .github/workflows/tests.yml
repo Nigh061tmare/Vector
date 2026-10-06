@@ -1,0 +1,15 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pillow opencv-python-headless pytest fastapi httpx requests mypy
+      - run: python -m pytest -q tests
+      - run: python -m mypy --ignore-missing-imports --follow-imports=silent vector_motion.py vector_behavior.py vector_gaze.py vector_map.py vector_life.py vector_vad.py vector_supervisor.py

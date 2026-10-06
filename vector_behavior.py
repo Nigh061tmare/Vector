@@ -300,7 +300,8 @@ class Behavior:
     def _transiciones(self, x: Inputs, bat_ok: bool) -> bool:
         s = self.state
         dwell = self._dwell()
-        bat_baja = bat_ok and x.battery_v <= V_BAT_BAJA and not x.on_charger
+        bv: float = x.battery_v if (bat_ok and x.battery_v is not None) else 99.0
+        bat_baja = bat_ok and bv <= V_BAT_BAJA and not x.on_charger
 
         if s == State.HUIR:
             if dwell >= HUIR_DURACION_S and x.threat < AMENAZA_CALMA:
@@ -322,7 +323,7 @@ class Behavior:
 
         if s == State.DESPERTAR:
             if dwell >= DESPERTAR_DURACION_S:
-                if x.on_charger and bat_ok and x.battery_v < V_BAT_OK:
+                if x.on_charger and bat_ok and bv < V_BAT_OK:
                     return False         # esperar carga antes de salir
                 return self._go(State.EXPLORAR, "Estiramiento listo: a explorar.")
             return False

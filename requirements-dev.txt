@@ -1,0 +1,8 @@
+numpy
+pillow
+opencv-python-headless
+pytest
+fastapi
+httpx
+requests
+mypy

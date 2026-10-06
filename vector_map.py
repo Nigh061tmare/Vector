@@ -72,7 +72,7 @@ class OccupancyGrid:
         x, y, h = pose
         a = math.radians(h + bearing_deg)
         hit = dist_mm is not None and dist_mm < TOF_MAX_MM
-        d = dist_mm if hit else TOF_MAX_MM
+        d: float = dist_mm if (hit and dist_mm is not None) else TOF_MAX_MM
         steps = int(d / (self.cell * 0.5))
         seen = set()
         for k in range(steps):
@@ -139,7 +139,7 @@ class OccupancyGrid:
 
     def to_ascii(self, pose: Optional[Tuple[float, float, float]] = None, half: int = 15) -> str:
         """Vista de depuracion/NEXUS (# ocupado, . libre, ' ' desconocido, R robot, H base)."""
-        c0 = self.to_cell(pose[0], pose[1]) if pose else (self.n // 2, self.n // 2)
+        c0 = (self.to_cell(pose[0], pose[1]) if pose else None) or (self.n // 2, self.n // 2)
         ch = self.to_cell(*self.home) if self.home else None
         rows = []
         for j in range(c0[1] + half, c0[1] - half - 1, -1):
