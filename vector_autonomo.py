@@ -42,7 +42,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from vector_vad import EnergyVAD
+try:
+    from vector_vad import EnergyVAD
+except Exception:                      # modulo ausente/numpy roto: la escucha funciona sin VAD
+    class EnergyVAD:                   # type: ignore[no-redef]
+        speaking = True
+
+        def feed(self, chunk: bytes) -> None:
+            return None
+
+        def reset(self) -> None:
+            pass
 import requests
 import subprocess
 import urllib.error

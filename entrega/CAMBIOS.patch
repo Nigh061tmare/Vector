@@ -1,0 +1,1042 @@
+--- a/vector_autonomo.py
++++ b/vector_autonomo.py
+@@ -30,6 +30,7 @@
+ import logging
+ import math
+ import os
++import concurrent.futures
+ import queue
+ import random
+ import re
+@@ -40,6 +41,18 @@
+ from datetime import datetime
+ from pathlib import Path
+ from typing import Any, Deque, Dict, List, Optional, Tuple
++
++try:
++    from vector_vad import EnergyVAD
++except Exception:                      # modulo ausente/numpy roto: la escucha funciona sin VAD
++    class EnergyVAD:                   # type: ignore[no-redef]
++        speaking = True
++
++        def feed(self, chunk: bytes) -> None:
++            return None
++
++        def reset(self) -> None:
++            pass
+ import requests
+ import subprocess
+ import urllib.error
+@@ -190,6 +203,11 @@
+ MODO_PATRULLA = _flag("MODO_PATRULLA")
+ MODO_NOCTURNO_SUAVE = _flag("MODO_NOCTURNO_SUAVE")
+ HABLAR_PENSAMIENTOS = _flag("HABLAR_PENSAMIENTOS")
++# Vida animal (FSM + movimiento suave + mirada). Opt-in: sin probar en hardware.
++MODO_VIDA = _flag("MODO_VIDA", "0")
++# Avance continuo con rampas en vez de tramos de 12 mm (opt-in, sin probar en hardware)
++AVANZAR_CONTINUO = _flag("AVANZAR_CONTINUO", "0")
++_ESCENA_VIDA: Dict[str, Any] = {}     # la rellena el reflejo mosca (nombre/side/near/novel)
+ AUDIO_INPUT_DEVICE = os.getenv("AUDIO_INPUT_DEVICE", "K38").strip()
+ 
+ SHOW_CAMERA = False
+@@ -1145,6 +1163,13 @@
+         "{}:{}".format(d.get("rol"), d.get("texto")) for d in dias
+     ], sep="; ")
+ 
++    try:
++        import vector_facts
++        with _mem_lock:
++            extra = vector_facts.context(m, extra or ev) + (extra or "")
++    except Exception:
++        pass
++
+     # contexto CORTO: menos tokens = menos meta en Nemotron
+     plantilla = (
+         "Situacion:{ev}. Animo:{animo}. "
+@@ -1706,19 +1731,31 @@
+ 
+ def bat_low(robot: Any) -> bool:
+     try:
+-        e = robot.get_battery_state()
+-        return bool(e and e.battery_volts <= V_BAT_BAJA)
++        v = bat_volts(robot)
++        return bool(v >= _BAT_VALIDA_V and v <= V_BAT_BAJA)
+     except Exception:
+         return False
+ 
+ 
++_BAT_VALIDA_V = 2.5          # por debajo de esto la lectura es un fallo, no una bateria
++_bat_cache: Dict[str, float] = {"v": 0.0, "t": 0.0}
++
++
+ def bat_volts(robot: Any) -> float:
++    """Voltaje real; ante fallo/0 V devuelve la ultima lectura buena (<=120 s).
++
++    Devuelve 0.0 solo si nunca hubo una lectura valida o esta caducada.
++    """
+     try:
+         e = robot.get_battery_state()
+-        if e and e.battery_volts:
+-            return float(e.battery_volts)
++        v = float(getattr(e, "battery_volts", 0.0) or 0.0) if e else 0.0
++        if v >= _BAT_VALIDA_V:
++            _bat_cache["v"], _bat_cache["t"] = v, time.time()
++            return v
+     except Exception:
+         pass
++    if time.time() - _bat_cache["t"] <= 120.0:
++        return _bat_cache["v"]
+     return 0.0
+ 
+ 
+@@ -1757,6 +1794,22 @@
+ ) -> bool:
+     recor = 0.0
+     vel = vel_fija if vel_fija else (V_RAPIDA if rapido else V_NORMAL)
++    if AVANZAR_CONTINUO:
++        try:
++            from vector_motion import MotionController, drive_distance
++            mc = MotionController(robot, guard=lambda: not (es_borde(robot) or es_up(robot)))
++            _, motivo = drive_distance(
++                mc, total, vel, lambda: prox_ok(robot), lambda: es_borde(robot) or es_up(robot),
++                FRENO_MM, PELIGRO_MM, COMODO_MM)
++            if motivo in ("peligro", "inseguro"):
++                stat(m, "choques_evitados")
++                if motivo == "peligro":
++                    atras(robot, 35)
++            elif motivo in ("obstaculo", "sin_lectura"):
++                stat(m, "choques_evitados")
++            return motivo == "ok"
++        except Exception as _e_cont:
++            log.warning("avance continuo fallo (%s); uso tramos", _e_cont)
+     while recor < total:
+         if es_borde(robot) or es_up(robot):
+             return False
+@@ -1776,6 +1829,29 @@
+             return False
+         recor += tr
+     return True
++
++
++def rodar_suave(robot: Any, lin: float, trn: float, dur: float) -> Tuple[float, float]:
++    """Mueve las ruedas con rampa de arranque/frenada (ver vector_motion).
++
++    Bloqueante ~dur + tiempo de frenada. Devuelve la (L, R) objetivo en mm/s.
++    """
++    from vector_motion import MotionController, TICK_HZ, diff_drive
++    mc = MotionController(robot, guard=lambda: not (es_borde(robot) or es_up(robot)))
++    mc.set_target(lin, trn, ttl=dur)
++    dt = 1.0 / TICK_HZ
++    fin = time.monotonic() + dur
++    try:
++        while time.monotonic() < fin:
++            mc.tick(dt); time.sleep(dt)
++        mc.stop()
++        for _ in range(int(TICK_HZ)):  # <=1 s de frenada suave
++            l, r = mc.tick(dt); time.sleep(dt)
++            if abs(l) < 1.0 and abs(r) < 1.0:
++                break
++    finally:
++        mc.emergency_stop()
++    return diff_drive(lin, trn)
+ 
+ 
+ def escanear(robot: Any, mapa: Mapa) -> None:
+@@ -2903,7 +2979,7 @@
+         # Discord 2.0 gestiona la conexión desde vector_discord.py (iniciar_discord_2)
+         log.info("Escucha PC: Discord manejado por bot 2.0 externo")
+         if TIENE_VOSK and self.vosk_model_path.exists():
+-            threading.Thread(target=self._loop_dual_stt, daemon=True, name="EscuchaDual").start()
++            threading.Thread(target=self._loop_dual_supervisado, daemon=True, name="EscuchaDual").start()
+             return
+         if TIENE_SR and USAR_ESCUCHA_PC:
+             threading.Thread(target=self._loop_sr, daemon=True, name="EscuchaSR").start()
+@@ -2912,18 +2988,36 @@
+         print("Escucha micrófono inactiva.")
+ 
+ 
++    def _loop_dual_supervisado(self) -> None:
++        """Relanza la escucha si el hilo muere (mic desenchufado, error de Vosk...)."""
++        while not self.stop.is_set():
++            self._loop_dual_stt()
++            if not self.stop.is_set():
++                log.warning("Escucha dual terminada; reintento en 5 s")
++                time.sleep(5.0)
++
+     def _loop_dual_stt(self) -> None:
+         try:
+             model = vosk.Model(str(self.vosk_model_path)) if (TIENE_VOSK and self.vosk_model_path.exists()) else None
+             recg = sr.Recognizer() if TIENE_SR else None
+-            q_audio: "queue.Queue" = queue.Queue()
++            q_audio: "queue.Queue" = queue.Queue(maxsize=60)   # ~7 s: si el STT va lento, se descarta lo viejo
++            vad = EnergyVAD()
++            oyo_voz = False
++            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+ 
+             dev_idx = buscar_dispositivo_microfono(AUDIO_INPUT_DEVICE)
+             dev_nombre = "Predeterminado" if dev_idx is None else str(sd.query_devices(dev_idx).get("name", dev_idx))
+             print(f"Oído inteligente Dual (Google STT + Vosk [es-ES]) ON usando microfono: [{dev_nombre}]")
+ 
+             def _audio_cb(indata, frames, time_info, status):
+-                q_audio.put(bytes(indata))
++                try:
++                    q_audio.put_nowait(bytes(indata))
++                except queue.Full:
++                    try:
++                        q_audio.get_nowait()          # descartar el mas viejo
++                        q_audio.put_nowait(bytes(indata))
++                    except Exception:
++                        pass
+ 
+             with sd.RawInputStream(
+                 samplerate=16000, blocksize=2000, dtype="int16", channels=1,
+@@ -2936,7 +3030,22 @@
+                 buffer_frase = bytearray()
+ 
+                 while not self.stop.is_set():
+-                    data = q_audio.get()
++                    try:
++                        data = q_audio.get(timeout=0.5)
++                    except queue.Empty:
++                        continue
++                    # No escucharse a si mismo: mientras Vector habla (y 0.8 s despues)
++                    # se descarta el audio y se reinicia el reconocedor.
++                    if _speak_lock.locked() or time.time() - _last_speak < 0.8:
++                        buffer_frase.clear(); vad.reset(); oyo_voz = False
++                        if rec:
++                            try:
++                                rec.Reset()
++                            except Exception:
++                                pass
++                        continue
++                    vad.feed(data)
++                    oyo_voz = oyo_voz or vad.speaking
+                     buffer_frase.extend(data)
+ 
+                     # Limitar buffer para evitar acumulación
+@@ -2949,10 +3058,13 @@
+ 
+                         texto_final = ""
+                         # 1. Intentar Google STT de alta precision con el audio capturado
+-                        if recg and len(buffer_frase) >= 16000 * 2 * 0.4:
++                        if recg and oyo_voz and len(buffer_frase) >= 16000 * 2 * 0.4:
+                             try:
+                                 audio_chunk = sr.AudioData(bytes(buffer_frase), 16000, 2)
+-                                txt_google = recg.recognize_google(audio_chunk, language="es-ES").strip().lower()
++                                # En hilo aparte y con tope: antes una red lenta bloqueaba
++                                # el bucle de audio y la cola crecia sin limite.
++                                fut = pool.submit(recg.recognize_google, audio_chunk, language="es-ES")
++                                txt_google = fut.result(timeout=6.0).strip().lower()
+                                 if txt_google and len(txt_google) >= 2:
+                                     texto_final = txt_google
+                             except Exception:
+@@ -2962,7 +3074,7 @@
+                         if not texto_final:
+                             texto_final = txt_vosk
+ 
+-                        buffer_frase.clear()
++                        buffer_frase.clear(); oyo_voz = False
+ 
+                         if not texto_final or len(texto_final) < 3:
+                             continue
+@@ -3258,7 +3370,17 @@
+             qhabla.put(random.choice(FRASES["capricho"]))
+         return "capricho"
+ 
+-    r = explorar(robot, c, mapa, m, obs)
++    if MODO_VIDA:
++        try:
++            import vector_life
++            esc = _ESCENA_VIDA if _ESCENA_VIDA.get("on") else {}
++            r = vector_life.vivir(robot, 6.0, scene=dict(esc), threat=min(1.0, c.miedo / 100.0),
++                                  busy_fn=lambda: _speak_lock.locked())
++        except Exception as e:  # nunca dejar al robot sin comportamiento
++            log.warning("MODO_VIDA fallo (%s); uso explorar clasico", e)
++            r = explorar(robot, c, mapa, m, obs)
++    else:
++        r = explorar(robot, c, mapa, m, obs)
+     c.ev("exploracion"); habito(m, "exp_" + r); stat(m, "exploraciones")
+     return r
+ 
+@@ -3271,6 +3393,26 @@
+     stat(m, "comandos_voz"); c.ev("voz")
+     dia_push(m, "humano", bruto or orden)
+     c.set_estado("escuchando")
++
++    # Memoria de hechos: "recuerda que ..." / "que te dije ...?"
++    try:
++        import vector_facts
++        _txt = bruto or data or orden
++        _hecho = vector_facts.extract(_txt)
++        _es_q, _resto = vector_facts.is_recall_query(_txt)
++        if _hecho:
++            with _mem_lock:
++                nuevo = vector_facts.add(m, _hecho)
++            guardar_mem(m)
++            decir(robot, "Vale, lo recordare." if nuevo else "Ya lo sabia, gracias.", c)
++            return
++        if _es_q:
++            with _mem_lock:
++                _resp = vector_facts.reply_for_recall(m, _resto)
++            decir(robot, _resp, c)
++            return
++    except Exception as _e_facts:
++        log.debug("facts: %s", _e_facts)
+ 
+     # 1. Frenar inmediatamente las ruedas para atender al humano
+     try:
+@@ -3882,6 +4024,15 @@
+         time.sleep(0.05)
+ 
+ 
++def _talk_note(last, signal) -> None:
++    """Registra una emision propia para no reaccionar a su eco."""
++    try:
++        import vector_talk as _vt
++        last.setdefault("talk_proto", _vt.ChirpProtocol()).note_emitted(signal)
++    except Exception:
++        pass
++
++
+ def gestionar_talk(talk, fly_reflex, fc, last):
+     """Protocolo de chirps estilo Flyctor: oye senales y emite las propias.
+ 
+@@ -3907,7 +4058,22 @@
+                 "acercate":  (0.0, 190.0, 0.0),
+                 "bloqueado": (0.0, 90.0, 0.95),
+                 "ayuda":     (0.0, 140.0, 0.70),
++                "ven":       (0.0, 200.0, 0.0),
++                "aqui":      (0.0, 240.0, 0.0),
++                "te_veo":    (0.0, 260.0, 0.0),
++                "para":      (0.0, 120.0, 0.50),
+             }
++            # Conversacion: acuse/respuesta, ignorando el eco de nuestra propia voz.
++            try:
++                import vector_talk as _vt
++                proto = last.setdefault("talk_proto", _vt.ChirpProtocol())
++                resp = proto.on_heard(oido)
++                if resp and ahora - float(last.get("talk_reply", 0.0)) >= 1.0:
++                    last["talk_reply"] = ahora
++                    proto.note_emitted(resp)
++                    talk.emitir(resp)
++            except Exception as _e_pr:
++                log.debug("Talk protocolo: %s", _e_pr)
+             if fly_reflex is not None and fly_reflex.online and sig in mapa_sens:
+                 b, d, t = mapa_sens[sig]
+                 try:
+@@ -3920,10 +4086,12 @@
+         escena = fc.get("scene") or {}
+         if escena.get("novel"):
+             last["talk_emit"] = ahora
++            _talk_note(last, "objeto")
+             talk.emitir("objeto")
+         elif fc.get("escape") and ahora - float(last.get("talk_escape", 0.0)) >= 8.0:
+             last["talk_escape"] = ahora
+             last["talk_emit"] = ahora
++            _talk_note(last, "bloqueado")
+             talk.emitir("bloqueado")
+ 
+ 
+@@ -4221,6 +4389,8 @@
+                         last["flybrain"] = now
+                         try:
+                             fc = fly_reflex.tick(mapa=mapa)
++                            if fc and isinstance(fc.get("scene"), dict):
++                                _ESCENA_VIDA.clear(); _ESCENA_VIDA.update(fc["scene"])
+                             # Protocolo de chirps: oir senales y emitir las propias
+                             try:
+                                 gestionar_talk(talk, fly_reflex, fc, last)
+@@ -4270,11 +4440,7 @@
+                                     last["fly_wander"] = now
+                                     lin = float(fc.get("linear", 0.0))
+                                     trn = float(fc.get("turn", 0.0))
+-                                    wl = max(-120.0, min(120.0, (lin - trn * 0.8) * 90.0))
+-                                    wr = max(-120.0, min(120.0, (lin + trn * 0.8) * 90.0))
+-                                    robot.motors.set_wheel_motors(wl, wr)
+-                                    time.sleep(0.6)
+-                                    robot.motors.set_wheel_motors(0.0, 0.0)
++                                    wl, wr = rodar_suave(robot, lin * 0.75, trn, 0.9)
+                                     log.info("FlyBrain explorar L=%.0f R=%.0f (%s)", wl, wr, fc.get("mode"))
+                                     if random.random() < 0.15:
+                                         try:
+@@ -4301,7 +4467,11 @@
+                             volts = float(getattr(bs, "battery_volts", 0.0))
+                             lvl = str(getattr(bs, "battery_level", ""))
+                             on_ch = bool(getattr(bs, "is_on_charger_platform", False)) or bool(robot.status.is_on_charger)
+-                            if not on_ch and (volts < 3.55 or "LOW" in lvl):
++                            if volts < _BAT_VALIDA_V:
++                                volts = bat_volts(robot)
++                            if volts < _BAT_VALIDA_V:
++                                pass  # lectura fallida: no tomar decisiones con 0 V
++                            elif not on_ch and (volts < 3.55 or "LOW" in lvl):
+                                 log.info("Bateria baja (%.2fV); voy a la base a cargar", volts)
+                                 hilo(lambda: robot.behavior.drive_on_charger())
+                                 try:
+@@ -4426,7 +4596,7 @@
+                                 elif cmd_w == "matrix":
+                                     animacion_matrix_oled(robot)
+                                 elif cmd_w == "cargador":
+-                                    go_dock(robot, c, m)
++                                    on_charger(robot, c)
+                             except Exception as _err_acc:
+                                 print("Aviso accion web:", _err_acc)
+                         elif tipo_w == "web_decir":
+@@ -5142,7 +5312,8 @@
+     """Invoca el guardián de red para obtener un nuevo token gRPC y sincronizar con Wire-Pod."""
+     try:
+         import vector_network_guard
+-        return vector_network_guard.renovar_token_wirepod(ip_vector=robot_ip)
++        # HEALER serializa las renovaciones y aplica enfriamiento/backoff.
++        return vector_network_guard.HEALER.heal(robot_ip, motivo="watchdog")
+     except Exception as err:
+         log.warning("Watchdog Auto-Heal: error al invocar vector_network_guard: %s", err)
+         return False
+@@ -5161,7 +5332,12 @@
+         except Exception as e:
+             reintentos += 1
+             err_str = str(e)
+-            if "401" in err_str or "UNAUTHENTICATED" in err_str or "unauthorized" in err_str.lower():
++            try:
++                from vector_network_guard import es_error_401
++                _es401 = es_error_401(e)
++            except Exception:
++                _es401 = "401" in err_str or "UNAUTHENTICATED" in err_str
++            if _es401:
+                 log.warning("Detectado error 401 gRPC / UNAUTHENTICATED. Renovando token automáticamente con Wire-Pod...")
+                 print("\n[Watchdog Auto-Heal] 401 Unauthorized detectado. Renovando token automáticamente con Wire-Pod...")
+                 renovar_token_wirepod()
+--- a/vector_dashboard.py
++++ b/vector_dashboard.py
+@@ -639,6 +639,15 @@
+     except Exception as e:
+         return JSONResponse(content={"connected": False, "error": str(e)})
+ 
++@app.get("/api/vida")
++def get_vida():
++    """Estado de la vida animal: FSM, ruedas L/R, linea de tiempo, mapa y objetos."""
++    try:
++        import vector_life
++        return JSONResponse(content=vector_life.snapshot())
++    except Exception as e:
++        return JSONResponse(content={"activo": False, "error": str(e)})
++
+ @app.get("/api/talk")
+ def get_talk():
+     """Estado del protocolo de chirps (Flyctor): emisor + receptor."""
+--- a/vector_network_guard.py
++++ b/vector_network_guard.py
+@@ -12,9 +12,9 @@
+ import time
+ import socket
+ import logging
++import threading
+ from pathlib import Path
+-from typing import Optional, Tuple
+-import requests
++from typing import Any, Optional, Tuple
+ 
+ import vector_log
+ log = vector_log.get_logger("netguard")
+@@ -33,6 +33,53 @@
+ SSH_REMOTE_USER = "vector"
+ SSH_REMOTE_HOST = "100.100.148.91"
+ REMOTE_BOT_SDK_INFO = r"C:\Users\pepde\AppData\Roaming\wire-pod\jdocs\botSdkInfo.json"
++# GUID global de Wire-Pod: es un secreto, mejor por entorno que en el codigo.
++WIREPOD_GLOBAL_GUID = os.getenv("WIREPOD_GLOBAL_GUID", "tni1TRsTRTaNSapjo0Y+Sw==")
++
++# Anti-tormenta: tras renovar (o fallar) no se vuelve a intentar antes de esto.
++RENEW_COOLDOWN_OK_S = 30.0
++RENEW_BACKOFF_MIN_S = 15.0
++RENEW_BACKOFF_MAX_S = 600.0
++
++
++def redactar(valor: Any, visibles: int = 4) -> str:
++    """Oculta secretos (GUID, tokens de sesion) para los logs."""
++    t = str(valor or "")
++    return t if len(t) <= visibles else t[:visibles] + "***"
++
++
++def es_error_401(exc: BaseException) -> bool:
++    """True si `exc` es un fallo de autenticacion gRPC (token/GUID invalido).
++
++    Mira el tipo (VectorUnauthenticatedException / grpc.StatusCode) y solo
++    despues el texto, y recorre la cadena __cause__/__context__ porque el SDK
++    envuelve el RpcError.
++    """
++    seen = set()
++    cur: Optional[BaseException] = exc
++    while cur is not None and id(cur) not in seen:
++        seen.add(id(cur))
++        if type(cur).__name__ == "VectorUnauthenticatedException":
++            return True
++        code = getattr(cur, "code", None)
++        try:
++            c = code() if callable(code) else code
++        except Exception:
++            c = None
++        if c is not None and "UNAUTHENTICATED" in str(c).upper():
++            return True
++        txt = str(cur).lower()
++        if "401" in txt or "unauthenticated" in txt or "unauthorized" in txt:
++            return True
++        cur = cur.__cause__ or cur.__context__
++    return False
++
++
++def escribir_atomico(path: Path, contenido: str) -> None:
++    """Escribe y reemplaza: un cliente que lea a mitad no ve un ini truncado."""
++    tmp = path.with_suffix(path.suffix + ".tmp")
++    tmp.write_text(contenido, encoding="utf-8")
++    os.replace(tmp, path)
+ 
+ 
+ def resolver_ip_vector(timeout: float = 3.0) -> str:
+@@ -101,8 +148,8 @@
+             f"name = {ROBOT_NAME}\n"
+             f"guid = {current_guid}\n"
+         )
+-        CONFIG_PATH.write_text(content, encoding="utf-8")
+-        log.info("sdk_config.ini actualizado con IP=%s, GUID=%s", ip, current_guid)
++        escribir_atomico(CONFIG_PATH, content)
++        log.info("sdk_config.ini actualizado con IP=%s, GUID=%s", ip, redactar(current_guid))
+         return True
+     except Exception as e:
+         log.error("Error escribiendo sdk_config.ini: %s", e)
+@@ -114,7 +161,7 @@
+     try:
+         import subprocess
+         json_data = (
+-            '{"global_guid":"tni1TRsTRTaNSapjo0Y+Sw==","robots":['
++            f'{{"global_guid":"{WIREPOD_GLOBAL_GUID}","robots":['
+             f'{{"esn":"{ROBOT_SN}","ip_address":"{ip_vector}","guid":"{guid}","activated":true}}'
+             ']}'
+         )
+@@ -146,6 +193,8 @@
+         log.error("Certificado de Vector no encontrado en %s", CERT_PATH)
+         return False
+ 
++    import requests  # import perezoso: el modulo sigue importable sin requests
++
+     session_token = None
+     for wp_url in WIREPOD_HOSTS:
+         try:
+@@ -153,7 +202,7 @@
+             if resp.status_code == 200:
+                 session_token = resp.json().get("session", {}).get("session_token")
+                 if session_token:
+-                    log.info("Sesión obtenida de Wire-Pod (%s): %s", wp_url, session_token)
++                    log.info("Sesión obtenida de Wire-Pod (%s): %s", wp_url, redactar(session_token))
+                     break
+         except Exception as e:
+             log.debug("Wire-Pod en %s no respondió: %s", wp_url, e)
+@@ -187,7 +236,7 @@
+         )
+         res = stub.UserAuthentication(req, timeout=10)
+         new_guid = res.client_token_guid.decode("utf-8")
+-        log.info("¡Nuevo GUID Vector emitido con éxito!: %s", new_guid)
++        log.info("¡Nuevo GUID Vector emitido con éxito!: %s", redactar(new_guid))
+ 
+         # Actualizar config local y remoto
+         actualizar_sdk_config(ip=ip_vector, guid=new_guid)
+@@ -196,6 +245,53 @@
+     except Exception as err:
+         log.error("Error solicitando UserAuthenticationRequest a Vector: %s", err)
+         return False
++
++
++class TokenHealer:
++    """Renovacion de token serializada y con backoff.
++
++    Antes, cada hilo/cliente que veia un 401 lanzaba su propia renovacion: se
++    pisaban entre si y martilleaban Wire-Pod/Vector.  Ahora una sola renovacion
++    a la vez (lock), con enfriamiento tras exito y backoff exponencial tras fallo.
++    Quien llega mientras otro renueva espera y reutiliza su resultado.
++    """
++
++    def __init__(self, renovar=None, clock=time.monotonic) -> None:
++        self._renovar = renovar or renovar_token_wirepod
++        self._clock = clock
++        self._lock = threading.Lock()
++        self._next_ok = 0.0          # no renovar antes de este instante
++        self._fails = 0
++        self._last_result = False
++        self.renovaciones = 0
++
++    def heal(self, ip_vector: Optional[str] = None, motivo: str = "") -> bool:
++        with self._lock:                      # serializa: los demas esperan aqui
++            now = self._clock()
++            if now < self._next_ok:
++                # Otro hilo acaba de renovar (o fallo hace poco): reutilizar.
++                log.debug("heal(%s) omitido: enfriamiento %.0fs (ultimo=%s)",
++                          motivo, self._next_ok - now, self._last_result)
++                return self._last_result
++            try:
++                ok = bool(self._renovar(ip_vector))
++            except Exception as e:  # noqa: BLE001
++                log.error("heal(%s) excepcion: %s", motivo, e)
++                ok = False
++            self._last_result = ok
++            if ok:
++                self._fails = 0
++                self.renovaciones += 1
++                self._next_ok = self._clock() + RENEW_COOLDOWN_OK_S
++            else:
++                self._fails += 1
++                espera = min(RENEW_BACKOFF_MAX_S,
++                             RENEW_BACKOFF_MIN_S * (2 ** (self._fails - 1)))
++                self._next_ok = self._clock() + espera
++            return ok
++
++
++HEALER = TokenHealer()
+ 
+ 
+ def verificar_y_reparar_conexion() -> Tuple[bool, str]:
+@@ -232,10 +328,9 @@
+             log.info(msg)
+             return True, msg
+     except Exception as e:
+-        err_str = str(e)
+-        if "401" in err_str or "UNAUTHENTICATED" in err_str or "unauthorized" in err_str.lower():
++        if es_error_401(e):
+             log.warning("Token gRPC desautenticado (401). Iniciando autorenovación con Wire-Pod...")
+-            ok = renovar_token_wirepod(ip_actual)
++            ok = HEALER.heal(ip_actual, motivo="verificar_y_reparar")
+             if ok:
+                 return True, "Token gRPC renovado exitosamente con Wire-Pod."
+             return False, "Fallo al autorenovar token con Wire-Pod."
+--- a/vector_nexus.html
++++ b/vector_nexus.html
+@@ -291,6 +291,40 @@
+       <span class="tag vl" id="tk-last-in">último oído: --</span>
+     </div>
+     <div style="margin-top:11px;max-height:170px;overflow-y:auto" id="talk-log"></div>
++  </div>
++
++  <!-- VIDA ANIMAL -->
++  <div class="card c12" id="card-vida">
++    <h2><span class="dot"></span>Vida · qué hace y por qué</h2>
++    <div class="tgrid">
++      <div class="titem"><div class="tlab">Comportamiento</div>
++        <div class="tval" id="v-estado" style="color:var(--cy)">--</div></div>
++      <div class="titem"><div class="tlab">Personalidad</div>
++        <div class="tval" id="v-pers" style="font-size:.8rem">--</div></div>
++      <div class="titem"><div class="tlab">Rueda izq (mm/s)</div>
++        <div class="tval" id="v-l">--</div>
++        <div class="bar"><i id="v-lbar" style="width:0%;background:var(--cy)"></i></div></div>
++      <div class="titem"><div class="tlab">Rueda der (mm/s)</div>
++        <div class="tval" id="v-r">--</div>
++        <div class="bar"><i id="v-rbar" style="width:0%;background:var(--mg)"></i></div></div>
++      <div class="titem"><div class="tlab">Miedo</div>
++        <div class="tval" id="v-miedo">--</div>
++        <div class="bar"><i id="v-miedobar" style="width:0%;background:var(--gr)"></i></div></div>
++      <div class="titem"><div class="tlab">Cabeza · pupila</div>
++        <div class="tval" id="v-head" style="font-size:.85rem">--</div></div>
++    </div>
++    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px">
++      <div style="flex:2;min-width:260px">
++        <div class="tlab">Línea de tiempo (en lenguaje natural)</div>
++        <div id="v-tl" style="font-size:.82rem;max-height:210px;overflow:auto;margin-top:5px"></div>
++      </div>
++      <div style="flex:1;min-width:230px">
++        <div class="tlab">Mapa (R = Vector, H = base, # obstáculo)</div>
++        <pre id="v-map" style="font-size:.62rem;line-height:.95;margin:5px 0 0;color:var(--cy)">--</pre>
++        <div class="tlab" style="margin-top:8px">Objetos recordados</div>
++        <div id="v-obj" style="font-size:.8rem">--</div>
++      </div>
++    </div>
+   </div>
+ 
+   <!-- CONTROLES -->
+@@ -455,6 +489,27 @@
+     drawSpec(k.espectro||[], k.segmentos||[]);
+   }catch(e){}
+ 
++  // vida animal
++  try{
++    const v = await (await fetch('/api/vida')).json();
++    $('card-vida').style.display = v.activo ? '' : 'none';
++    if(v.activo){
++      $('v-estado').textContent = v.estado+' · '+(v.ojos||'');
++      $('v-pers').textContent = v.personalidad||'--';
++      const w = v.ruedas||{left:0,right:0};
++      $('v-l').textContent = w.left; $('v-r').textContent = w.right;
++      $('v-lbar').style.width = Math.min(100,Math.abs(w.left)/120*100)+'%';
++      $('v-rbar').style.width = Math.min(100,Math.abs(w.right)/120*100)+'%';
++      $('v-miedo').textContent = v.miedo; $('v-miedobar').style.width = Math.min(100,v.miedo)+'%';
++      $('v-head').textContent = v.cabeza_deg+'° · pupila '+v.pupila;
++      $('v-tl').innerHTML = (v.timeline||[]).slice().reverse().map(e=>
++        `<div class="ln"><b style="color:var(--mg)">${escapeHtml(e.estado)}</b> ${escapeHtml(e.razon)}</div>`).join('');
++      $('v-map').textContent = v.mapa||'';
++      $('v-obj').innerHTML = (v.objetos||[]).map(o=>
++        `${escapeHtml(o.name)} (${o.x},${o.y}) hace ${o.hace_s}s${o.movido?' · se movió':''}`).join('<br>')||'--';
++    }
++  }catch(e){}
++
+   // chat
+   try{
+     const log = await (await fetch('/api/chat_log')).json();
+--- a/vector_talk.py
++++ b/vector_talk.py
+@@ -5,11 +5,19 @@
+    camara -> VL -> cerebro-mosca -> ALTAVOZ
+    microfono -> decodificador -> cerebro-mosca -> movimiento
+ 
+-Vocabulario (4 senales):
+-   objeto    = 1 chirp          -> "encontre un objeto"
+-   acercate  = 2 chirps         -> "acercate"
+-   bloqueado = 1 tono largo     -> "camino bloqueado"
+-   ayuda     = chirps rapidos   -> "necesito ayuda"
++Vocabulario (9 senales; cada una = (n_chirps, frecuencia, duracion)):
++   objeto    = 1 chirp 1200 Hz  -> "encontre un objeto"
++   acercate  = 2 chirps 1200 Hz -> "acercate"
++   bloqueado = 1 tono largo 800 -> "camino bloqueado"
++   ayuda     = 4 chirps rapidos -> "necesito ayuda"
++   ack       = 1 chirp agudo    -> "recibido" (acuse)
++   aqui      = 3 chirps         -> "estoy aqui"
++   te_veo    = 2 chirps graves  -> "te veo"
++   ven       = 2 chirps agudos  -> "ven"
++   para      = 1 tono largo agudo -> "para / quieto"
++
++Protocolo (ChirpProtocol): una senal ajena se acusa con `ack`; `ven` se
++responde `aqui`; `ack` y el eco de la propia emision no generan respuesta.
+ 
+ El altavoz de Vector solo acepta WAV de 8000-16025 Hz, 16 bits, mono.
+ """
+@@ -47,7 +55,28 @@
+         "freq": 1600, "chirps": 4, "dur": 0.06, "gap": 0.06,
+         "label": "Necesito ayuda", "emoji": "🆘",
+     },
++    "ack": {
++        "freq": 2000, "chirps": 1, "dur": 0.08, "gap": 0.00,
++        "label": "Recibido", "emoji": "✅",
++    },
++    "aqui": {
++        "freq": 1400, "chirps": 3, "dur": 0.10, "gap": 0.10,
++        "label": "Estoy aqui", "emoji": "📍",
++    },
++    "te_veo": {
++        "freq": 800, "chirps": 2, "dur": 0.12, "gap": 0.12,
++        "label": "Te veo", "emoji": "👀",
++    },
++    "ven": {
++        "freq": 1800, "chirps": 2, "dur": 0.12, "gap": 0.12,
++        "label": "Ven", "emoji": "🫴",
++    },
++    "para": {
++        "freq": 1800, "chirps": 1, "dur": 0.50, "gap": 0.00, "long": True,
++        "label": "Para", "emoji": "✋",
++    },
+ }
++SIGNALS["bloqueado"]["long"] = True
+ 
+ #: Silencio al final de cada emision (ayuda al decodificador a cerrar el grupo)
+ TAIL_SILENCE = 0.10
+@@ -180,7 +209,7 @@
+ 
+         # tono largo vs corto
+         long_tone = med_dur >= 0.30
+-        if (name == "bloqueado") != long_tone:
++        if bool(spec.get("long", False)) != long_tone:
+             continue
+ 
+         # frecuencia: debe caer cerca de la del vocabulario. Sin esto, el
+@@ -208,6 +237,72 @@
+         "confidence": round(max(0.0, best_score), 2),
+     })
+     return out
++
++
++# ---------------------------------------------------------------- protocolo
++#: Respuesta automatica a cada senal ajena. None = no responder (evita ping-pong:
++#: ven -> aqui -> ack -> fin).
++REPLY: Dict[str, Optional[str]] = {
++    "objeto": "ack", "acercate": "ack", "bloqueado": "ack", "ayuda": "ack",
++    "aqui": "ack", "te_veo": "ack", "para": "ack",
++    "ven": "aqui",
++    "ack": None,
++}
++ECHO_MARGIN_S = 0.45      # latencia altavoz->mic + cola de reverberacion
++MIN_CONFIDENCE = 0.35
++
++
++class ChirpProtocol:
++    """Logica de conversacion pura (sin audio ni hilos), con reloj inyectable.
++
++    - `note_emitted()` registra lo que Vector acaba de decir: durante su duracion
++      (+ margen) la misma senal oida se considera eco propio y se ignora.
++    - `on_heard()` devuelve la senal con la que responder, o None.
++    - Un ack oido resuelve la ultima emision pendiente de acuse.
++    """
++
++    def __init__(self, clock=None) -> None:
++        import time as _t
++        self._clock = clock or _t.monotonic
++        self._emitted: List[Tuple[str, float, float]] = []   # (signal, t0, t_end)
++        self.pending_ack: Optional[Tuple[str, float]] = None  # (signal, t0)
++        self.acked: List[str] = []
++
++    def note_emitted(self, signal: str) -> None:
++        if signal not in SIGNALS:
++            raise ValueError(f"senal desconocida: {signal!r}")
++        now = self._clock()
++        dur = synth(signal).size / SR
++        self._emitted = [e for e in self._emitted if now - e[2] < 5.0]
++        self._emitted.append((signal, now, now + dur + ECHO_MARGIN_S))
++        if signal != "ack":
++            self.pending_ack = (signal, now)
++
++    def is_own_echo(self, signal: str) -> bool:
++        now = self._clock()
++        return any(sig == signal and t0 <= now <= t_end
++                   for sig, t0, t_end in self._emitted)
++
++    def on_heard(self, result: Dict[str, Any]) -> Optional[str]:
++        sig = result.get("signal")
++        if not sig or float(result.get("confidence", 0.0)) < MIN_CONFIDENCE:
++            return None
++        if self.is_own_echo(sig):
++            return None
++        if sig == "ack":
++            if self.pending_ack is not None:
++                self.acked.append(self.pending_ack[0])
++                self.pending_ack = None
++            return None
++        return REPLY.get(sig)
++
++    def ack_timed_out(self, timeout_s: float = 4.0) -> Optional[str]:
++        """Senal emitida sin acuse pasado `timeout_s` (para reintentar). Se consume."""
++        if self.pending_ack and self._clock() - self.pending_ack[1] > timeout_s:
++            sig = self.pending_ack[0]
++            self.pending_ack = None
++            return sig
++        return None
+ 
+ 
+ # ---------------------------------------------------------------- utilidades
+--- a/vector-fly/fly_core.py
++++ b/vector-fly/fly_core.py
+@@ -745,8 +745,11 @@
+             mode = "idle"
+             reflex_side = ""
+ 
+-        left = float(np.clip(linear - steer * 0.8, -1.0, 1.0))
+-        right = float(np.clip(linear + steer * 0.8, -1.0, 1.0))
++        left = linear - steer * 0.8
++        right = linear + steer * 0.8
++        # Normalizar por el pico (no recortar cada rueda): conserva el radio del arco.
++        _peak = max(abs(left), abs(right), 1.0)
++        left, right = float(left / _peak), float(right / _peak)
+         out = {
+             "left": round(left, 4),
+             "right": round(right, 4),
+--- a/vector-fly/fly_live.py
++++ b/vector-fly/fly_live.py
+@@ -36,6 +36,9 @@
+ _STATE = {"client": None, "demo": False, "demo_t": 0.0}
+ _CAM = {"on": False, "thread": None, "prev": None, "jpeg": None, "err": ""}
+ CAM_WIDTH = 160
++# La webcam del PC es un respaldo OPCIONAL (este PC no tiene): por defecto desactivada.
++USE_WEBCAM_FALLBACK = os.getenv("FLY_WEBCAM", "0").strip().lower() in ("1", "true", "si", "yes")
++SUPERVISOR_BACKOFF_S = 2.0
+ 
+ 
+ def _vector_frame(timeout: float = 5.0):
+@@ -53,7 +56,7 @@
+     return None
+ 
+ 
+-def _camera_loop() -> None:
++def _camera_loop_once() -> None:
+     """Captura webcam -> panoramica 1-D -> fotorreceptores de la mosca."""
+     try:
+         import cv2
+@@ -64,7 +67,12 @@
+         return
+     # 1) preferir la camara de Vector (dashboard /api/snapshot)
+     fallos = 0
+-    while _CAM["on"] and fallos < 3:
++    while _CAM["on"] and (fallos < 3 or not USE_WEBCAM_FALLBACK):
++        if fallos >= 3:
++            # Sin webcam de respaldo: reintentar la camara de Vector con espera,
++            # en vez de rendirse (el nucleo puede tardar en arrancar).
++            time.sleep(3.0)
++            fallos = 0
+         jpg = _vector_frame()
+         if jpg is None:
+             fallos += 1
+@@ -87,7 +95,7 @@
+             except Exception:
+                 pass
+         time.sleep(0.2)
+-    if not _CAM["on"]:
++    if not _CAM["on"] or not USE_WEBCAM_FALLBACK:
+         return
+     _CAM["err"] = "camara de Vector no disponible, pruebo webcam del PC"
+     cap = None
+@@ -105,8 +113,9 @@
+         if cap is not None:
+             break
+     if cap is None:
++        # No matar el puente: _camera_supervisor reintenta la camara de Vector.
+         _CAM["err"] = "no hay webcam en el PC (usa la camara de Vector)"
+-        _CAM["on"] = False
++        time.sleep(3.0)
+         return
+     while _CAM["on"]:
+         ok, frame = cap.read()
+@@ -130,6 +139,26 @@
+     cap.release()
+ 
+ 
++def _supervised(name: str, fn, flag: dict) -> None:
++    """Ejecuta fn() en bucle mientras flag['on']; si lanza o termina, la relanza.
++
++    Un hilo del puente que muere deja al cerebro-mosca ciego sin avisar: se
++    registra el error en flag['err'] y se reintenta con espera.
++    """
++    while flag.get("on"):
++        try:
++            fn()
++        except Exception as e:  # noqa: BLE001 - el supervisor no debe morir nunca
++            flag["err"] = f"{name} reiniciado: {type(e).__name__}: {str(e)[:80]}"
++            print("[fly_live]", flag["err"], flush=True)
++        if flag.get("on"):
++            time.sleep(SUPERVISOR_BACKOFF_S)
++
++
++def _camera_loop() -> None:
++    _supervised("camara", _camera_loop_once, _CAM)
++
++
+ # ---------------- Vision semantica ("Astra ve, la mosca decide") ----------------
+ SCENE_PROVIDER = os.getenv("SCENE_PROVIDER", "auto").strip().lower()
+ SCENE_EVERY = float(os.getenv("SCENE_EVERY", "4.0"))
+@@ -181,30 +210,65 @@
+         return json.loads(r.read().decode("utf-8", "replace"))
+ 
+ 
+-def _parse_scene(text: str):
+-    objs = []
+-    m = re.search(r"\{.*\}", text or "", re.S)
++def _clamp(v: float, lo: float, hi: float) -> float:
++    return max(lo, min(hi, v))
++
++
++def _num(v, default: float) -> float:
++    try:
++        f = float(v)
++        return f if f == f and abs(f) != float("inf") else default
++    except (TypeError, ValueError):
++        return default
++
++
++def _parse_scene(text: str, max_objects: int = 4):
++    """Extrae objetos {name, side, near} de la salida de la VL.
++
++    Robusto a lo que hacen los modelos pequenos: vallas ```json, texto antes/despues,
++    JSON TRUNCADO por max_tokens (se recuperan los objetos completos que quepan),
++    numeros como cadenas y duplicados.  Antes un JSON cortado caia a una regex que
++    solia devolver un unico objeto.
++    """
++    text = re.sub(r"(?<=[:\s\[,])(-?)\.(\d)", r"\g<1>0.\2", text or "")  # '.5' -> '0.5'
++    objs: list = []
++    seen: set = set()
++
++    def add(name, side, near) -> None:
++        name = str(name or "").strip()[:32]
++        key = name.lower()
++        if len(name) < 2 or key in seen:
++            return
++        seen.add(key)
++        objs.append({"name": name,
++                     "side": _clamp(_num(side, 0.0), -1.0, 1.0),
++                     "near": _clamp(_num(near, 0.3), 0.0, 1.0)})
++
++    # 1) JSON completo
++    m = re.search(r"\{.*\}", text, re.S)
+     if m:
+         try:
+             j = json.loads(m.group(0))
+-            for o in (j.get("objects") or []):
+-                if isinstance(o, dict) and o.get("name"):
+-                    objs.append({"name": str(o["name"])[:32],
+-                                 "side": max(-1.0, min(1.0, float(o.get("side", 0.0)))),
+-                                 "near": max(0.0, min(1.0, float(o.get("near", 0.3))))})
+-        except Exception:
++            for o in (j.get("objects") or []) if isinstance(j, dict) else []:
++                if isinstance(o, dict):
++                    add(o.get("name"), o.get("side", 0.0), o.get("near", 0.3))
++        except (ValueError, AttributeError):
+             pass
++    # 2) objetos planos {...} sueltos (JSON truncado o con basura alrededor)
++    if not objs:
++        for mm in re.finditer(r"\{[^{}]*\}", text):
++            try:
++                o = json.loads(mm.group(0))
++            except ValueError:
++                continue
++            if isinstance(o, dict) and o.get("name"):
++                add(o.get("name"), o.get("side", 0.0), o.get("near", 0.3))
++    # 3) ultimo recurso: pares name/side/near en texto libre
+     if not objs:
+         for mm in re.finditer(
+-                r'name"?\s*[:=]\s*"?([\w \-]{2,32})"?[^\d\-]*(-?\d*\.?\d+)[^\d\-]+(\d*\.?\d+)',
+-                text or ""):
+-            try:
+-                objs.append({"name": mm.group(1).strip()[:32],
+-                             "side": max(-1.0, min(1.0, float(mm.group(2)))),
+-                             "near": max(0.0, min(1.0, float(mm.group(3))))})
+-            except Exception:
+-                continue
+-    return objs[:4]
++                r'name"?\s*[:=]\s*"?([\w \-]{2,32})"?[^\d\-]*(-?\d*\.?\d+)[^\d\-]+(\d*\.?\d+)', text):
++            add(mm.group(1), mm.group(2), mm.group(3))
++    return objs[:max_objects]
+ 
+ 
+ def _describe(jpg: bytes):
+@@ -214,7 +278,7 @@
+     if prov in ("auto", "llamacpp", "llama"):
+         try:
+             j = _post_json(f"{LLAMACPP_BASE}/chat/completions",
+-                           {"model": LLAMACPP_MODEL, "temperature": 0, "max_tokens": 300,
++                           {"model": LLAMACPP_MODEL, "temperature": 0, "max_tokens": 400,
+                             "messages": [{"role": "user", "content": [
+                                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                                 {"type": "text", "text": _VISION_PROMPT}
+@@ -256,7 +320,7 @@
+         return [], "", "openrouter error: " + str(e)[:80]
+ 
+ 
+-def _scene_loop() -> None:
++def _scene_loop_once() -> None:
+     """Cada SCENE_EVERY s mira la camara, la describe con la VL y la manda al cerebro."""
+     while _SCENE["on"]:
+         jpg = _CAM.get("jpeg")
+@@ -277,6 +341,10 @@
+                 except Exception:
+                     pass
+         time.sleep(max(1.0, SCENE_EVERY))
++
++
++def _scene_loop() -> None:
++    _supervised("vision", _scene_loop_once, _SCENE)
+ 
+ 
+ def get_client() -> FlyClient:
+@@ -549,7 +617,13 @@
+     except Exception as _e_auto:
+         print("  aviso auto-camara:", _e_auto)
+ 
+-    srv = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), Handler)
++    srv = None
++    while srv is None:
++        try:
++            srv = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), Handler)
++        except OSError as e:  # puerto ocupado por una instancia que esta muriendo
++            print(f"  puerto {WEB_PORT} ocupado ({e}); reintento en 3 s", flush=True)
++            time.sleep(3.0)
+     try:
+         srv.serve_forever()
+     except KeyboardInterrupt:
